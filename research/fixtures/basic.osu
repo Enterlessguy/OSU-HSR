@@ -1,0 +1,34 @@
+osu file format v14
+
+[General]
+AudioFilename: silence.mp3
+Mode: 0
+
+[Metadata]
+Title:Human Simulator Fixture
+TitleUnicode:Human Simulator Fixture
+Artist:OpenAI Research
+ArtistUnicode:OpenAI Research
+Creator:Codex
+Version:Circles Slider Spinner
+Source:
+Tags:synthetic fixture
+
+[Difficulty]
+HPDrainRate:5
+CircleSize:4
+OverallDifficulty:7
+ApproachRate:8
+SliderMultiplier:1.4
+SliderTickRate:1
+
+[Events]
+
+[TimingPoints]
+0,500,4,2,1,50,1,0
+
+[HitObjects]
+256,192,1000,1,0,0:0:0:0:
+128,192,1500,2,0,L|384:192,1,256
+256,192,2800,8,0,3800
+384,192,4300,1,0,0:0:0:0:

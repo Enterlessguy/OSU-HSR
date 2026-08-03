@@ -1,0 +1,14 @@
+{
+  "beatmap_sha256": "c2f0b3c3ec5732b9b3e018165a886b54cfb61433e0a9e175639d00f3b4b108e3",
+  "captured_replay_sha256": null,
+  "client_build_sha256": null,
+  "configuration_sha256": "83ce3337f927cdf4e3e19f9dfb1eecf18c4085204a301b3323c6a92f62dd4f40",
+  "corpus_manifest_sha256": null,
+  "map_plan_sha256": "c9352d2e539190a403c832d422c36ccc8db5ea5aab396e7b34a6724c9952d7b4",
+  "model_sha256": "built_in_perfect_baseline_v1",
+  "profile_percentile": 99.5,
+  "schema_version": 1,
+  "seed": 42,
+  "synthetic": true,
+  "trace_sha256": "f41297c0d6eee50dc7df4dc3d524226ed62329b2ea330b88e025b84537b214ad"
+}

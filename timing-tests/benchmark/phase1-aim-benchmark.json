@@ -1,0 +1,242 @@
+[
+  {
+    "skill": 20,
+    "effort": 50,
+    "aim": {
+      "lapses": 24,
+      "max_error_px": 66.915,
+      "mean_error_px": 11.891,
+      "misses_from_aim": 26,
+      "p95_error_px": 23.652
+    },
+    "strength": {
+      "end": 0.7853,
+      "initial": 1.0,
+      "mean": 0.9018,
+      "min": 0.6977,
+      "p50": 0.9095,
+      "p95": 0.9743,
+      "samples": 2802
+    }
+  },
+  {
+    "skill": 20,
+    "effort": 100,
+    "aim": {
+      "lapses": 0,
+      "max_error_px": 40.527,
+      "mean_error_px": 11.55,
+      "misses_from_aim": 4,
+      "p95_error_px": 22.889
+    },
+    "strength": {
+      "end": 0.8144,
+      "initial": 1.0,
+      "mean": 0.9042,
+      "min": 0.6985,
+      "p50": 0.9104,
+      "p95": 0.976,
+      "samples": 2802
+    }
+  },
+  {
+    "skill": 40,
+    "effort": 50,
+    "aim": {
+      "lapses": 12,
+      "max_error_px": 62.177,
+      "mean_error_px": 9.941,
+      "misses_from_aim": 12,
+      "p95_error_px": 19.856
+    },
+    "strength": {
+      "end": 0.8865,
+      "initial": 1.0,
+      "mean": 0.9173,
+      "min": 0.6981,
+      "p50": 0.9245,
+      "p95": 0.9784,
+      "samples": 2802
+    }
+  },
+  {
+    "skill": 40,
+    "effort": 100,
+    "aim": {
+      "lapses": 0,
+      "max_error_px": 35.64,
+      "mean_error_px": 10.044,
+      "misses_from_aim": 0,
+      "p95_error_px": 19.856
+    },
+    "strength": {
+      "end": 0.9603,
+      "initial": 1.0,
+      "mean": 0.9166,
+      "min": 0.7061,
+      "p50": 0.9227,
+      "p95": 0.9787,
+      "samples": 2802
+    }
+  },
+  {
+    "skill": 60,
+    "effort": 50,
+    "aim": {
+      "lapses": 7,
+      "max_error_px": 58.815,
+      "mean_error_px": 8.345,
+      "misses_from_aim": 7,
+      "p95_error_px": 17.129
+    },
+    "strength": {
+      "end": 0.8373,
+      "initial": 1.0,
+      "mean": 0.9303,
+      "min": 0.6981,
+      "p50": 0.9352,
+      "p95": 0.9819,
+      "samples": 2802
+    }
+  },
+  {
+    "skill": 60,
+    "effort": 100,
+    "aim": {
+      "lapses": 0,
+      "max_error_px": 28.771,
+      "mean_error_px": 8.034,
+      "misses_from_aim": 0,
+      "p95_error_px": 16.283
+    },
+    "strength": {
+      "end": 0.8622,
+      "initial": 1.0,
+      "mean": 0.9331,
+      "min": 0.7625,
+      "p50": 0.9382,
+      "p95": 0.9834,
+      "samples": 2802
+    }
+  },
+  {
+    "skill": 80,
+    "effort": 50,
+    "aim": {
+      "lapses": 2,
+      "max_error_px": 45.393,
+      "mean_error_px": 5.627,
+      "misses_from_aim": 2,
+      "p95_error_px": 11.314
+    },
+    "strength": {
+      "end": 0.9743,
+      "initial": 1.0,
+      "mean": 0.9524,
+      "min": 0.6982,
+      "p50": 0.9562,
+      "p95": 0.9869,
+      "samples": 2802
+    }
+  },
+  {
+    "skill": 80,
+    "effort": 100,
+    "aim": {
+      "lapses": 0,
+      "max_error_px": 20.16,
+      "mean_error_px": 5.804,
+      "misses_from_aim": 0,
+      "p95_error_px": 11.534
+    },
+    "strength": {
+      "end": 0.9761,
+      "initial": 1.0,
+      "mean": 0.9514,
+      "min": 0.8333,
+      "p50": 0.9548,
+      "p95": 0.9872,
+      "samples": 2802
+    }
+  },
+  {
+    "skill": 95,
+    "effort": 50,
+    "aim": {
+      "lapses": 0,
+      "max_error_px": 12.289,
+      "mean_error_px": 3.316,
+      "misses_from_aim": 0,
+      "p95_error_px": 6.617
+    },
+    "strength": {
+      "end": 0.9843,
+      "initial": 1.0,
+      "mean": 0.9713,
+      "min": 0.8973,
+      "p50": 0.9734,
+      "p95": 0.9918,
+      "samples": 2802
+    }
+  },
+  {
+    "skill": 95,
+    "effort": 100,
+    "aim": {
+      "lapses": 0,
+      "max_error_px": 12.667,
+      "mean_error_px": 3.358,
+      "misses_from_aim": 0,
+      "p95_error_px": 6.756
+    },
+    "strength": {
+      "end": 0.9855,
+      "initial": 1.0,
+      "mean": 0.9715,
+      "min": 0.8948,
+      "p50": 0.9735,
+      "p95": 0.9921,
+      "samples": 2802
+    }
+  },
+  {
+    "skill": 99.5,
+    "effort": 50,
+    "aim": {
+      "lapses": 0,
+      "max_error_px": 6.353,
+      "mean_error_px": 1.703,
+      "misses_from_aim": 0,
+      "p95_error_px": 3.432
+    },
+    "strength": {
+      "end": 0.9912,
+      "initial": 1.0,
+      "mean": 0.9846,
+      "min": 0.9458,
+      "p50": 0.9856,
+      "p95": 0.9952,
+      "samples": 2802
+    }
+  },
+  {
+    "skill": 99.5,
+    "effort": 100,
+    "aim": {
+      "lapses": 0,
+      "max_error_px": 6.387,
+      "mean_error_px": 1.686,
+      "misses_from_aim": 0,
+      "p95_error_px": 3.34
+    },
+    "strength": {
+      "end": 0.9921,
+      "initial": 1.0,
+      "mean": 0.9852,
+      "min": 0.9462,
+      "p50": 0.9861,
+      "p95": 0.9956,
+      "samples": 2802
+    }
+  }
+]

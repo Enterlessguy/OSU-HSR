@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "osu-human-sim"
+version = "0.1.0"
+description = "Offline, research-only human movement trace planner for osu!lazer."
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.13",
+    "polars>=1.0",
+    "scikit-learn>=1.5",
+    "pyarrow>=16",
+    "pydantic>=2.7",
+    "matplotlib>=3.9",
+    "pandas>=2.2",
+    "joblib>=1.4",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.2"]
+
+[project.scripts]
+human-sim = "human_sim.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
