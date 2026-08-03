@@ -3,6 +3,41 @@
 Date: 2026-08-03. Map: Camellia - Xeroa benchmark anchor (Kingborn NM, 2802
 objects, OD 10). Percentile anchor 99.5, seed 42, 500 Hz. All traces validated.
 
+## v1.5 (jerk-tuned) results
+
+Planner version `jerk-tuned-v1.5` (2026-08-03). Motion is now continuous:
+a slow absolute wander plus a persistent curve state replace the old
+per-transition random noise, and the low-skill speed ceiling (with the
+min-jerk peak factor and hard per-step guard) makes flicks impossible. The
+skill/effort accuracy profile is unchanged in shape (measured on the same
+maps at 500 Hz, seed 42):
+
+| map | skill | effort | est. acc % | aim miss % | max speed px/s |
+|---|---:|---:|---:|---:|---:|
+| Crystalia [Luminosity] | 10 | 40 | 16.7 | 67.4 | 3558 |
+| Crystalia [Luminosity] | 20 | 70 | 28.8 | 51.8 | 3782 |
+| Crystalia [Luminosity] | 50 | 68 | 48.2 | 24.5 | 4359 |
+| Crystalia [Luminosity] | 99 | 40 | 98.7 | 0.0 | 10320 |
+| Kingborn NM | 10 | 40 | 21.9 | 66.0 | 3527 |
+| Kingborn NM | 20 | 70 | 30.5 | 54.7 | 3785 |
+| Kingborn NM | 50 | 68 | 52.5 | 26.6 | 5685 |
+| Kingborn NM | 99 | 40 | 98.2 | 0.1 | 16230 |
+| tokiko's Hard | 20 | 70 | 61.3 | 28.3 | 3802 |
+| Kawa's HEAVENLY+ (HR+DT) | 50 | 68 | 19.2 | 69.5 | 5677 |
+| Kawa's HEAVENLY+ (HR+DT) | 99 | 40 | 87.9 | 3.2 | 16625 |
+
+Motion quality (tokiko's Hard, skill 20/effort 70; 60 Hz display scale):
+
+| metric | v4 (before) | v1.5 (after) |
+|---|---:|---:|
+| path/displacement ratio p50 | 1.603 | 1.057 |
+| visible direction reversals / s | 21.5 | 10.4 |
+| angular speed p95 (rad/s) | 2127 | 850 |
+| median cursor speed px/s | 610 | 287 |
+| display-scale max speed px/s | 2438 | 2461 |
+
+The old v3 aim sweep remains below for reference.
+
 ## Model
 
 Skill (0-100) now drives the complete parameter set (aim, timing, curvature,

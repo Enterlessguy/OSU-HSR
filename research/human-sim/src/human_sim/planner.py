@@ -10,7 +10,7 @@ from .schemas import HumanProfile, MapObject, MapPlan, TraceFrame
 
 # Bump when trace-generation behaviour changes so the runner's content-addressed
 # trace cache is invalidated (the configuration hash includes this string).
-PLANNER_VERSION = "settle-chord-v3"
+PLANNER_VERSION = "jerk-tuned-v1.5"
 
 
 @dataclass(frozen=True)
@@ -35,15 +35,47 @@ PRESETS: dict[float, SkillParameters] = {
 }
 
 # Aim-sigma anchors by skill percentile (px). Skill 100 is machine-perfect.
+# v4 nerfs the low-skill end hard: a 10% player now routinely lands outside a
+# radius-36 circle instead of pinning the centre.
 AIM_SIGMA_ANCHORS = [
-    (0.0, 7.5),
-    (50.0, 5.0),
-    (75.0, 3.6),
-    (90.0, 2.5),
-    (95.0, 1.9),
-    (99.0, 1.25),
-    (99.5, 0.95),
+    (0.0, 16.0),
+    (20.0, 12.5),
+    (50.0, 8.5),
+    (75.0, 5.5),
+    (90.0, 3.5),
+    (95.0, 2.6),
+    (99.0, 1.6),
+    (99.5, 1.15),
     (100.0, 0.0),
+]
+
+# Per-skill cursor speed ceiling in osu! playfield px/s (512x384 space).
+# The old model's 50k transition cap and 90k resample guard allowed inhuman
+# flicks; real humans on the benchmark host move at ~500-4000 px/s. Short
+# moves are additionally capped lower than long ones (see _speed_ceiling).
+SPEED_CEILING_ANCHORS = [
+    (0.0, 2_400.0),
+    (20.0, 2_800.0),
+    (50.0, 4_200.0),
+    (75.0, 6_000.0),
+    (90.0, 8_000.0),
+    (95.0, 9_500.0),
+    (99.0, 12_000.0),
+    (99.5, 13_000.0),
+    (100.0, 1_000_000.0),
+]
+
+# Spinner rotation speed by skill (RPM). A 10% player spins at ~120 RPM, not
+# the 300-420 RPM the old model always used; orbit speed would otherwise
+# exceed the movement ceiling for low-skill profiles.
+SPINNER_RPM_ANCHORS = [
+    (0.0, 120.0),
+    (50.0, 250.0),
+    (75.0, 330.0),
+    (90.0, 380.0),
+    (95.0, 400.0),
+    (99.5, 430.0),
+    (100.0, 480.0),
 ]
 
 # Per-criterion importance weights for the overall strength function
@@ -63,11 +95,11 @@ STRENGTH_WEIGHTS = {
 # criterion (not just aim): timing, curvature, corrections, holds, fatigue.
 # Anchors below the 50th percentile extrapolate to a beginner profile.
 SKILL_ANCHORS: dict[str, list[tuple[float, float]]] = {
-    "aim_sigma": [(0.0, 7.5), (50.0, 5.0), (75.0, 3.6), (90.0, 2.5), (95.0, 1.9), (99.0, 1.25), (99.5, 0.95), (100.0, 0.0)],
-    "timing_sigma_ms": [(0.0, 22.0), (50.0, 17.0), (75.0, 12.0), (90.0, 8.0), (95.0, 6.0), (99.0, 4.2), (99.5, 3.4), (100.0, 0.0)],
+    "aim_sigma": [(0.0, 16.0), (20.0, 12.5), (50.0, 8.5), (75.0, 5.5), (90.0, 3.5), (95.0, 2.6), (99.0, 1.6), (99.5, 1.15), (100.0, 0.0)],
+    "timing_sigma_ms": [(0.0, 34.0), (50.0, 22.0), (75.0, 15.0), (90.0, 10.0), (95.0, 7.5), (99.0, 5.0), (99.5, 4.0), (100.0, 0.0)],
     "timing_rho": [(0.0, 0.55), (50.0, 0.58), (75.0, 0.60), (90.0, 0.62), (95.0, 0.64), (99.0, 0.66), (99.5, 0.68), (100.0, 0.68)],
-    "curvature_ratio": [(0.0, 0.100), (50.0, 0.085), (75.0, 0.072), (90.0, 0.060), (95.0, 0.052), (99.0, 0.044), (99.5, 0.040), (100.0, 0.040)],
-    "correction_probability": [(0.0, 0.60), (50.0, 0.52), (75.0, 0.46), (90.0, 0.40), (95.0, 0.36), (99.0, 0.31), (99.5, 0.28), (100.0, 0.28)],
+    "curvature_ratio": [(0.0, 0.050), (50.0, 0.042), (75.0, 0.035), (90.0, 0.028), (95.0, 0.024), (99.0, 0.020), (99.5, 0.018), (100.0, 0.018)],
+    "correction_probability": [(0.0, 0.35), (50.0, 0.30), (75.0, 0.26), (90.0, 0.22), (95.0, 0.20), (99.0, 0.17), (99.5, 0.15), (100.0, 0.15)],
     "hold_mean_ms": [(0.0, 80.0), (50.0, 78.0), (75.0, 75.0), (90.0, 72.0), (95.0, 70.0), (99.0, 68.0), (99.5, 67.0), (100.0, 67.0)],
     "hold_sigma_ms": [(0.0, 20.0), (50.0, 18.0), (75.0, 15.0), (90.0, 12.0), (95.0, 10.0), (99.0, 8.0), (99.5, 7.0), (100.0, 7.0)],
     "fatigue_gain": [(0.0, 0.18), (50.0, 0.16), (75.0, 0.13), (90.0, 0.10), (95.0, 0.08), (99.0, 0.06), (99.5, 0.05), (100.0, 0.05)],
@@ -131,7 +163,12 @@ class HumanTracePlanner:
         self.step_ms = 1000.0 / profile.sample_rate_hz
         self.timing_state = 0.0
         self.aim_state = np.zeros(2)
-        self.aim_consistency = 0.0
+        # v1.5 continuous-motion states: a slow absolute drift and a persistent
+        # curve direction. Unlike per-transition random draws, these evolve
+        # smoothly across the whole run so adjacent moves keep one continuous
+        # path instead of resetting into independent squiggles.
+        self.wander = np.zeros(2)
+        self.curve_state = 0.0
         self.fatigue = profile.fatigue_initial
 
         # Skill/effort axes (0..1). Skill sets the aim ceiling; effort sets how
@@ -141,11 +178,6 @@ class HumanTracePlanner:
         anchor_skills = [anchor[0] for anchor in AIM_SIGMA_ANCHORS]
         anchor_sigmas = [anchor[1] for anchor in AIM_SIGMA_ANCHORS]
         self.aim_sigma_base = float(np.interp(profile.skill_level, anchor_skills, anchor_sigmas))
-
-        # Per-player aim "habit": a fixed offset plus a directional octant bias
-        # that persists across the whole run (the player's own fingerprint).
-        self.aim_habit = self.rng.normal(0.0, 0.35 * self.aim_sigma_base, 2)
-        self.octant_bias = self.rng.normal(0.0, 0.25 * self.aim_sigma_base, (8, 2))
 
         # Phase-1 diagnostics: aim error distribution and strength samples.
         self.aim_errors: list[float] = []
@@ -160,6 +192,30 @@ class HumanTracePlanner:
             import joblib
 
             self.model_bundle = joblib.load(model_bundle_path)
+
+    def _speed_ceiling(self, distance: float) -> float:
+        """Per-move speed ceiling: skill sets the base, distance scales it so
+        short corrections stay slower/more controlled while long jumps may use
+        more of the ceiling."""
+        anchors = SPEED_CEILING_ANCHORS
+        base = float(np.interp(self.skill * 100.0, [a[0] for a in anchors], [a[1] for a in anchors]))
+        scale = float(np.clip(0.55 + 0.45 * (distance / 260.0), 0.55, 1.15))
+        return base * scale
+
+    def _advance_motion_states(self, dt_ms: float) -> None:
+        """Advance the continuous wander/curve states over a time step so the
+        path stays smooth and correlated across object transitions."""
+        if self.profile.perfect_baseline:
+            return
+        dt = max(1.0, dt_ms)
+        wander_rho = math.exp(-dt / 650.0)
+        wander_sigma = self.aim_sigma_base * (0.10 + 0.08 * (1.0 - self.effort))
+        innovation_scale = math.sqrt(max(1e-9, 1.0 - wander_rho * wander_rho))
+        self.wander = wander_rho * self.wander + self.rng.normal(0.0, wander_sigma * innovation_scale, 2)
+        curve_rho = math.exp(-dt / 800.0)
+        self.curve_state = curve_rho * self.curve_state + self.rng.normal(
+            0.0, math.sqrt(max(1e-9, 1.0 - curve_rho * curve_rho))
+        )
 
     def generate(self) -> list[TraceFrame]:
         first_time = self.map.objects[0].start_time_ms
@@ -199,7 +255,7 @@ class HumanTracePlanner:
             chorded = (
                 obj.kind == "circle"
                 and index > 0
-                and hit_time - previous_hit < self.step_ms
+                and 0.0 <= hit_time - previous_hit < self.step_ms
                 and key_intervals
             )
             if chorded:
@@ -260,8 +316,12 @@ class HumanTracePlanner:
                     key_intervals[-1][2],
                 )
             else:
-                last_time = hit_time
-                last_position = target
+                # The transition path may have been truncated at the press time
+                # when the speed ceiling left the cursor mid-flight (late
+                # arrival -> natural miss). Continue the next move from where
+                # the cursor actually is, not from the planned target.
+                last_time = max(hit_time, cursor[-1][0])
+                last_position = cursor[-1][1]
 
         key_intervals = self._ensure_key_rearm(key_intervals)
         end_time = max(last_time, max(end for _, end, _ in key_intervals)) + 100.0
@@ -271,22 +331,32 @@ class HumanTracePlanner:
         self, intervals: list[tuple[float, float, int]]
     ) -> list[tuple[float, float, int]]:
         """Guarantee a sampled key-up before either physical key is reused."""
-        adjusted = list(intervals)
+        adjusted: list[tuple[float, float, int]] = []
         for key in (0, 1):
-            indices = [index for index, interval in enumerate(adjusted) if interval[2] == key]
-            for current_index, next_index in zip(indices, indices[1:]):
-                begin, end, _ = adjusted[current_index]
-                next_begin = adjusted[next_index][0]
-                latest_release = next_begin - self.step_ms
-                if end <= latest_release:
+            chain = sorted(
+                (interval for interval in intervals if interval[2] == key),
+                key=lambda interval: interval[0],
+            )
+            for begin, end, interval_key in chain:
+                if not adjusted or adjusted[-1][2] != key:
+                    adjusted.append((begin, end, interval_key))
                     continue
-                if latest_release - begin < self.step_ms * 2.0:
-                    raise ValueError(
-                        "Trace sample rate is too low to release and re-arm a tapping key "
-                        f"between objects at {begin:.3f} ms and {next_begin:.3f} ms"
-                    )
-                adjusted[current_index] = (begin, latest_release, key)
-        return adjusted
+                previous_begin, previous_end, previous_key = adjusted[-1]
+                latest_release = begin - self.step_ms
+                if previous_end <= latest_release:
+                    adjusted.append((begin, end, interval_key))
+                    continue
+                if latest_release - previous_begin >= self.step_ms * 2.0:
+                    # Enough room to release and re-arm: clip the previous
+                    # hold so both presses stay distinct.
+                    adjusted[-1] = (previous_begin, latest_release, previous_key)
+                    adjusted.append((begin, end, interval_key))
+                else:
+                    # Two same-key presses closer than any release/re-arm
+                    # cycle (dense sections with large timing errors). A human
+                    # would cover both with one press: merge the holds.
+                    adjusted[-1] = (previous_begin, max(previous_end, end), previous_key)
+        return sorted(adjusted, key=lambda interval: interval[0])
 
     def _strain(self, index: int) -> float:
         if index == 0:
@@ -304,7 +374,11 @@ class HumanTracePlanner:
         if self.profile.perfect_baseline:
             self.timing_errors.append(0.0)
             return obj.start_time_ms
-        sigma = self.params.timing_sigma_ms * (1.0 + 0.7 * strain + 0.35 * self.fatigue)
+        sigma = (
+            self.params.timing_sigma_ms
+            * (1.0 + 0.45 * (1.0 - self.effort))
+            * (1.0 + 0.7 * strain + 0.35 * self.fatigue)
+        )
         rho = self.params.timing_rho
         innovation = self._model_sample("hit_error_ms", index, self.rng.normal(0.0, sigma))
         self.timing_state = rho * self.timing_state + innovation * math.sqrt(1.0 - rho**2)
@@ -322,40 +396,56 @@ class HumanTracePlanner:
         return np.array([np.clip(result[0], margin, 512 - margin), np.clip(result[1], margin, 384 - margin)])
 
     def _aim_offset(self, index: int, obj: MapObject, strain: float) -> np.ndarray:
-        """Phase-1 aim structure: skill ceiling x effort consistency, plus the
-        player's persistent aim habit and rare large aim lapses."""
-        # Effort-modulated consistency: the aim quality wanders slowly during a
-        # run (good moments, bad moments). Low effort means wider wandering.
-        consistency_rho = math.exp(-1.0 / max(40.0, 400.0 * (1.0 - self.effort) + 40.0))
-        consistency_innovation = 0.35 * (1.0 - self.effort) * math.sqrt(max(1e-9, 1.0 - consistency_rho**2))
-        self.aim_consistency = consistency_rho * self.aim_consistency + self.rng.normal(0.0, consistency_innovation)
-        self.aim_consistency = float(np.clip(self.aim_consistency, -1.0, 1.0))
-        # Rebalanced strain scaling: hard sections degrade aim gradually
-        # instead of blowing past the circle in bursts. Capped at ~1.8x base.
-        sigma = self.aim_sigma_base * (1.0 + 0.5 * self.aim_consistency) * (1.0 + min(0.5 * strain + 0.3 * self.fatigue, 0.8))
+        """v4 aim landing: random, entry-side-biased, speed-coupled.
 
-        # Direction octant for the habit bias (relative to the previous object).
+        There is no persistent habit/octant pattern. The target is most likely
+        on the side of the circle the cursor enters, but anywhere in the circle
+        becomes likely when the move is fast or effort is low, and the spread
+        grows with speed, strain and fatigue (faster -> less accurate).
+        """
         if index:
             previous = self.map.objects[index - 1]
             dx = obj.position.x - previous.end_position.x
             dy = obj.position.y - previous.end_position.y
         else:
             dx, dy = obj.position.x - 256.0, obj.position.y - 192.0
-        octant = int((math.atan2(dy, dx) + math.tau) % math.tau / (math.tau / 8.0)) % 8
-        habit = self.aim_habit + self.octant_bias[octant]
+        distance = math.hypot(dx, dy)
+        approach_angle = math.atan2(dy, dx)
 
-        innovation = np.array(
-            [
-                self._model_sample("aim_offset_x", index, self.rng.normal(0.0, sigma)),
-                self._model_sample("aim_offset_y", index, self.rng.normal(0.0, sigma)),
-            ]
+        # How hard this move has to be: Fitts natural pace vs the skill speed
+        # ceiling. Fast moves (long jumps at low skill) inflate the spread.
+        fitts_ms = (70.0 + 92.0 * math.log2(distance / 64.0 + 1.0)) * (1.08 - self.profile.percentile / 600.0)
+        fitts_speed = distance / max(1.0, fitts_ms) * 1000.0
+        speed_ratio = float(np.clip(fitts_speed / max(1.0, self._speed_ceiling(distance)), 0.0, 1.0))
+
+        sigma = (
+            self.aim_sigma_base
+            * (1.0 + 0.6 * (1.0 - self.effort))
+            * (1.0 + speed_ratio * (0.35 + 0.75 * (1.0 - self.skill)))
+            * (1.0 + min(0.45 * strain + 0.25 * self.fatigue, 0.7))
         )
-        # Slightly less persistent aim state: individual errors, fewer streaks.
-        self.aim_state = 0.45 * self.aim_state + innovation * math.sqrt(1 - 0.45**2)
-        offset = self.aim_state + habit
+
+        # Mixture of entry-side-biased and uniformly-random landing directions.
+        uniform_probability = float(np.clip(0.20 + 0.30 * speed_ratio + 0.15 * (1.0 - self.effort), 0.0, 1.0))
+        if self.rng.random() < uniform_probability:
+            angle = self.rng.uniform(0.0, math.tau)
+        else:
+            angular_sigma_rad = math.radians(28.0 + 65.0 * speed_ratio + 40.0 * (1.0 - self.skill))
+            angle = approach_angle + self.rng.normal(0.0, angular_sigma_rad)
+
+        noise = self.rng.normal(0.0, sigma, 2)
+        cos_a, sin_a = math.cos(angle), math.sin(angle)
+        offset = np.array(
+            [noise[0] * cos_a - noise[1] * sin_a, noise[0] * sin_a + noise[1] * cos_a]
+        )
+
+        # Weak correlated wander: consecutive landings feel related without a
+        # fixed pattern.
+        self.aim_state = 0.55 * self.aim_state + self.rng.normal(0.0, 0.30 * sigma, 2)
+        offset = offset + 0.25 * self.aim_state
 
         # Aim lapse: a rare large over/undershoot that lands outside the circle.
-        lapse_probability = (1.0 - self.skill) ** 2 * (1.0 - self.effort) * (0.01 + 0.05 * strain)
+        lapse_probability = (1.0 - self.skill) ** 2 * (1.0 - self.effort) * (0.02 + 0.06 * strain)
         if self.rng.random() < lapse_probability:
             direction = self.rng.uniform(0.0, math.tau)
             lapse_distance = obj.radius * self.rng.uniform(1.05, 1.5)
@@ -492,8 +582,23 @@ class HumanTracePlanner:
         # available time cannot fit the distance at a plausible speed, the
         # cursor simply arrives late (and the press naturally misses) instead
         # of teleporting.
-        max_transition_speed_px_s = 50_000.0
-        min_duration = max(self.step_ms, distance / max_transition_speed_px_s)
+        if self.profile.perfect_baseline:
+            max_transition_speed_px_s = 50_000.0
+        else:
+            # Skill ceiling x distance scaling x per-move randomness. The
+            # random multiplier gives each move its own slightly different
+            # pace so speeds are never deterministic.
+            move_speed_multiplier = self.rng.uniform(0.82, 1.08)
+            max_transition_speed_px_s = self._speed_ceiling(distance) * move_speed_multiplier
+        # distance (px) / speed (px/s) yields seconds; min_duration is in
+        # milliseconds. The missing *1000 made the speed ceiling never bind
+        # (it always collapsed to one sample step), which let the cursor
+        # flick across long jumps at 10-50x the intended speed.
+        # The minimum-jerk profile peaks at 15/8 = 1.875x its average speed
+        # mid-move, and the curvature/noise jitter terms stack on top of that.
+        # A 2.4x factor keeps the worst-case instantaneous speed (peak + jitter)
+        # under the ceiling instead of letting brief 2-3x spikes through.
+        min_duration = max(self.step_ms, distance / max_transition_speed_px_s * 1000.0 * 2.4)
         if duration < min_duration:
             duration = min_duration
         start_time = max(available_from, hit_time - settle - duration)
@@ -503,34 +608,44 @@ class HumanTracePlanner:
         arrival_time = hit_time - settle
         if start_time >= available_from and arrival_time - start_time < min_duration:
             arrival_time = start_time + min_duration
+        self._advance_motion_states(max(1.0, arrival_time - start_time))
         count = max(2, int(math.ceil((arrival_time - start_time) / self.step_ms)) + 1)
         times = np.linspace(start_time, arrival_time, count)
         u = np.linspace(0.0, 1.0, count)
         progress = _minimum_jerk(u)
         direction = _normalised(target - start)
         normal = np.array([-direction[1], direction[0]])
-        curve = 0.0 if self.profile.perfect_baseline else self.rng.normal(
-            0.0, max(0.5, distance * self.params.curvature_ratio)
+        # Continuous signed bow: the persistent curve state keeps consecutive
+        # moves bending the same way instead of darting left/right at random.
+        curve = 0.0 if self.profile.perfect_baseline else self.curve_state * max(
+            0.5, distance * self.params.curvature_ratio
         )
         residual = np.zeros(count) if self.profile.perfect_baseline else _ou_bridge(
             self.rng,
             count,
-            self.params.aim_sigma * (0.25 + 0.55 * strain),
-            self.rng.uniform(35.0, 110.0),
+            self.params.aim_sigma * (0.07 + 0.14 * strain),
+            self.rng.uniform(160.0, 340.0),
             self.step_ms,
         )
         correction = np.zeros(count)
-        if not self.profile.perfect_baseline and self.rng.random() < self.params.correction_probability:
+        # Occasional small mid-path correction jerk: rare, brief, subtle.
+        if not self.profile.perfect_baseline and self.rng.random() < self.params.correction_probability * 0.5:
             centre = self.rng.uniform(0.68, 0.88)
             width = self.rng.uniform(0.06, 0.14)
-            correction = self.rng.normal(0.0, self.params.aim_sigma * 0.9) * np.exp(-0.5 * ((u - centre) / width) ** 2)
+            correction = self.rng.normal(0.0, self.params.aim_sigma * 0.45) * np.exp(-0.5 * ((u - centre) / width) ** 2)
 
         for time_ms, amount, phase, noise, correction_value in zip(times, progress, 4 * u * (1 - u), residual, correction):
-            position = start + (target - start) * amount + normal * (curve * phase + noise + correction_value)
+            if time_ms > hit_time:
+                # The speed ceiling left the cursor still en route when the
+                # press fires (late arrival -> the press misses naturally).
+                # Emit no points past the press: a later object's transition
+                # starts from the cursor's actual position at this moment.
+                break
+            position = start + (target - start) * amount + normal * (curve * phase + noise + correction_value) + self.wander
             points.append((float(time_ms), position))
 
         if arrival_time + self.step_ms < hit_time:
-            points.append((hit_time, target.copy()))
+            points.append((hit_time, target + self.wander))
 
     def _append_slider(self, points: list[tuple[float, np.ndarray]], obj: MapObject, hit_time: float, strain: float) -> None:
         if len(obj.path_samples) < 2 or obj.end_time_ms <= obj.start_time_ms:
@@ -547,13 +662,20 @@ class HumanTracePlanner:
         times = np.linspace(tracking_start, obj.end_time_ms, count)
         path = np.array([[point.x, point.y] for point in obj.path_samples])
         noise = np.zeros(count) if self.profile.perfect_baseline else _ou_bridge(
-            self.rng, count, self.params.aim_sigma * (0.25 + 0.45 * strain), 80.0, self.step_ms
+            self.rng, count, self.params.aim_sigma * (0.06 + 0.12 * strain), 220.0, self.step_ms
         )
+        # Slider-follow speed bound. Sliders legitimately move at map velocity,
+        # but the entry correction (merging a cursor parked far from the head)
+        # must not yank the cursor across the playfield faster than a human can
+        # physically move. Floor keeps very-low-skill profiles from crawling.
+        max_slider_speed_px_s = max(2_400.0, self._speed_ceiling(80.0) * 1.6)
         lag = 0.0 if self.profile.perfect_baseline else float(
             np.clip(self.rng.normal(0.0, 0.012 + strain * 0.01), -0.035, 0.035)
         )
         entry_position = points[-1][1].copy()
         first_base: np.ndarray | None = None
+        noise_sign = 1.0
+        previous_tangent: np.ndarray | None = None
         for index, time_ms in enumerate(times):
             # MapPlan path samples come from lazer's StackedPositionAt() over
             # the complete [start, end] slider duration. They already include
@@ -570,8 +692,22 @@ class HumanTracePlanner:
                 first_base = base.copy()
             entry_correction = (entry_position - first_base) * math.exp(-(time_ms - times[0]) / 80.0)
             tangent = _normalised(path[upper] - path[max(0, lower - 1)])
+            if previous_tangent is not None and float(np.dot(tangent, previous_tangent)) < 0.0:
+                # The path turned around (repeat/reversal) or the sampled curve
+                # wiggled by sub-pixel amounts. Keep the lateral noise offset on
+                # the same physical side of the slider so the cursor never
+                # snaps across the curve.
+                noise_sign = -noise_sign
+            previous_tangent = tangent
             normal = np.array([-tangent[1], tangent[0]])
-            points.append((float(time_ms), base + entry_correction + normal * noise[index]))
+            position = base + entry_correction + normal * (noise_sign * noise[index]) + self.wander
+            if index > 0 and time_ms > points[-1][0]:
+                max_step = max_slider_speed_px_s * (time_ms - points[-1][0]) / 1000.0
+                delta = position - points[-1][1]
+                step = float(np.linalg.norm(delta))
+                if step > max_step:
+                    position = points[-1][1] + delta * (max_step / step)
+            points.append((float(time_ms), position))
 
     def _append_spinner(
         self,
@@ -594,7 +730,9 @@ class HumanTracePlanner:
             centre = np.array([256.0, 192.0]) + self.rng.normal(0.0, self.params.aim_sigma * 0.7, 2)
             radius_x = self.rng.uniform(70.0, 105.0)
             radius_y = radius_x * self.rng.uniform(0.82, 1.08)
-            rpm = self.rng.uniform(300.0, 420.0) * (0.92 + self.profile.percentile / 1250.0)
+            anchors = SPINNER_RPM_ANCHORS
+            base_rpm = float(np.interp(self.skill * 100.0, [a[0] for a in anchors], [a[1] for a in anchors]))
+            rpm = base_rpm * self.rng.uniform(0.88, 1.10)
             direction = -1.0 if self.rng.random() < 0.5 else 1.0
             phase = self.rng.uniform(0.0, math.tau)
         entry = centre + np.array([radius_x * math.cos(phase), radius_y * math.sin(phase)])
@@ -655,10 +793,13 @@ class HumanTracePlanner:
 
         # Overlapping presses can briefly make the source path go backward,
         # which np.interp would turn into a teleport. In human profile mode,
-        # clamp every resampled step to a plausible speed cap (perfect mode
-        # keeps its own much higher machine ceiling).
+        # clamp every resampled step to the skill speed ceiling (with a small
+        # jitter allowance). This is the hard guarantee that the delivered
+        # trace never contains a humanly-impossible flick, whatever residual
+        # jitter stacks on the generated path. Perfect mode keeps its own much
+        # higher machine ceiling.
         if not self.profile.perfect_baseline:
-            max_profile_speed_px_s = 90_000.0
+            max_profile_speed_px_s = max(3_200.0, self._speed_ceiling(260.0) * 1.35)
             for index in range(1, len(out_x)):
                 delta_seconds = (frame_times[index] - frame_times[index - 1]) / 1000.0
                 if delta_seconds <= 0:
