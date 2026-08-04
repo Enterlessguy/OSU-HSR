@@ -21,6 +21,36 @@ function Get-RecommendedEffort {
     return [Math]::Round($e * 100.0)
 }
 
+function Get-CategoryTable {
+    # Midpoints chosen as the center of each band from the phase-1 benchmark
+    # ("Skill categories vs real players", estimates based on the oii+ dataset
+    # and community PP tiers). Rough real-world equivalents are informational
+    # only; manual % entry remains available.
+    @(
+        @{ Id = 1; Name = "beginner";       Mid = 10;  Range = "0-14";   Real = "<~500 pp; first weeks-months; struggles on Hard" },
+        @{ Id = 2; Name = "beginner+";      Mid = 20;  Range = "15-29";  Real = "~500-1000 pp; passes Hard, low acc on Insane" },
+        @{ Id = 3; Name = "intermediate";   Mid = 35;  Range = "30-44";  Real = "~1k-2k pp; comfortable Hard/Insane" },
+        @{ Id = 4; Name = "intermediate+";  Mid = 50;  Range = "45-59";  Real = "~2k-4k pp; plays 6-7* with moderate acc" },
+        @{ Id = 5; Name = "expert";         Mid = 65;  Range = "60-74";  Real = "~4k-6k pp; solid on 7*" },
+        @{ Id = 6; Name = "expert+";        Mid = 78;  Range = "75-87";  Real = "~6k-8k pp; high acc on 7-8*" },
+        @{ Id = 7; Name = "competitive";    Mid = 90;  Range = "88-95";  Real = "~8k-10k+ pp; top ~1-2%; near-FC on 7-8*" },
+        @{ Id = 8; Name = "superhuman";     Mid = 97;  Range = "96-99.9"; Real = "10k+ pp; top ~0.1%; 99%+ consistency" },
+        @{ Id = 9; Name = "max";            Mid = 100; Range = "100";    Real = "machine-perfect baseline (calibration, not human)" }
+    )
+}
+
+function Show-CategoryMenu {
+    Write-Host ""
+    Write-Host "Preset player categories (skill bands are estimates):" -ForegroundColor Cyan
+    foreach ($c in Get-CategoryTable) {
+        $real = $c.Real
+        if ($real.Length -gt 44) { $real = $real.Substring(0, 41) + "..." }
+        Write-Host ("  [{0}] {1,-15} skill {2,-8} {3}" -f $c.Id, $c.Name, $c.Range, $real)
+    }
+    Write-Host "  [M] Manual %  (pick any skill 0-100 yourself)" -ForegroundColor Yellow
+    Write-Host "  [P] Perfect   (skill 100, machine baseline)" -ForegroundColor Yellow
+}
+
 Write-Host "===============================================" -ForegroundColor Cyan
 Write-Host " OSU Human Simulator - research dev build" -ForegroundColor Cyan
 Write-Host "===============================================" -ForegroundColor Cyan
@@ -28,17 +58,44 @@ Write-Host "===============================================" -ForegroundColor Cy
 # --- Skill selection ---
 $skill = $null
 while ($null -eq $skill) {
-    $input = Read-Host "Skill level (0-100, or P for perfect)"
-    if ($input -match '^\s*p\s*$') {
+    Show-CategoryMenu
+    $input = Read-Host "Choose category [1-9], M for manual %, or P for perfect"
+    $modeHint = ""
+    if ($input -match '^\s*m\s*$') {
+        $modeHint = "manual"
+    }
+    elseif ($input -match '^\s*p\s*$') {
         $skill = 100.0
+        $modeHint = "perfect"
         break
     }
-    if ($input -match '^\s*(\d{1,3}(?:\.\d+)?)\s*$') {
+    elseif ($input -match '^\s*([1-9])\s*$') {
+        $category = Get-CategoryTable | Where-Object { $_.Id -eq [int]$Matches[1] }
+        if ($null -ne $category) {
+            Write-Host ""
+            Write-Host ("Preset: {0} -> skill {1} (band {2})." -f $category.Name, $category.Mid, $category.Range) -ForegroundColor Green
+            $accept = Read-Host "Use this preset (Enter), or type a manual skill %"
+            if ([string]::IsNullOrWhiteSpace($accept)) {
+                $skill = [double]$category.Mid
+                $modeHint = "preset $($category.Name)"
+                break
+            }
+            if ($accept -match '^\s*(\d{1,3}(?:\.\d+)?)\s*$') {
+                $value = [double]$Matches[1]
+                if ($value -ge 0 -and $value -le 100) { $skill = $value; $modeHint = "manual" }
+                else { Write-Host "Enter a value between 0 and 100." -ForegroundColor Yellow; continue }
+                break
+            }
+            Write-Host "Not a number; staying in the category menu." -ForegroundColor Yellow
+            continue
+        }
+    }
+    elseif ($input -match '^\s*(\d{1,3}(?:\.\d+)?)\s*$') {
         $value = [double]$Matches[1]
-        if ($value -ge 0 -and $value -le 100) { $skill = $value }
+        if ($value -ge 0 -and $value -le 100) { $skill = $value; $modeHint = "manual" }
         else { Write-Host "Enter a value between 0 and 100." -ForegroundColor Yellow }
     }
-    else { Write-Host "Enter a number 0-100, or P for perfect." -ForegroundColor Yellow }
+    else { Write-Host "Enter 1-9, M, P, or a manual number 0-100." -ForegroundColor Yellow }
 }
 
 # --- Effort selection with recommendation ---
@@ -71,7 +128,7 @@ else {
 $mode = if ($skill -ge 100) { "perfect" } else { "profile" }
 
 Write-Host ""
-Write-Host "Launch profile: mode=$mode skill=$skill effort=$effort" -ForegroundColor Cyan
+Write-Host "Launch profile: $modeHint, mode=$mode skill=$skill effort=$effort" -ForegroundColor Cyan
 
 $env:DOTNET_CLI_HOME = Join-Path $root ".dotnet-home"
 $env:NUGET_PACKAGES = Join-Path $root ".nuget\packages"

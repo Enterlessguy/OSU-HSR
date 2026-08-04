@@ -466,7 +466,7 @@ internal static class Program
         // sorted keys, compact separators, and Python-style float formatting.
         // Sorted key order must match Python: "percentile" < "perfect_baseline".
         double effectiveSkill = options.SkillLevel >= 0 ? options.SkillLevel : options.Percentile;
-        string json = $"{{\"effort_level\":{pythonFloat(options.EffortLevel)},\"percentile\":{pythonFloat(options.Percentile)},\"perfect_baseline\":{(options.AutoPlanMode == "perfect" ? "true" : "false")},\"planner_version\":\"jerk-tuned-v1.5\",\"sample_rate_hz\":{options.SampleRateHz},\"seed\":{options.Seed},\"skill_level\":{pythonFloat(effectiveSkill)}}}";
+        string json = $"{{\"effort_level\":{pythonFloat(options.EffortLevel)},\"percentile\":{pythonFloat(options.Percentile)},\"perfect_baseline\":{(options.AutoPlanMode == "perfect" ? "true" : "false")},\"planner_version\":\"distance-tuned-v1.6\",\"sample_rate_hz\":{options.SampleRateHz},\"seed\":{options.Seed},\"skill_level\":{pythonFloat(effectiveSkill)}}}";
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant();
     }
 

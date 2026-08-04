@@ -3,6 +3,48 @@
 Date: 2026-08-03. Map: Camellia - Xeroa benchmark anchor (Kingborn NM, 2802
 objects, OD 10). Percentile anchor 99.5, seed 42, 500 Hz. All traces validated.
 
+## v1.6 (distance-tuned) results
+
+Planner version `distance-tuned-v1.6` (2026-08-04). Short moves are now a
+little easier to land and long moves a little harder, without changing the
+human speed envelope:
+
+Note: aim landing uses the v4 entry-side-biased Gaussian model (most likely on
+the side of the circle the cursor enters, spread growing with speed/strain;
+rare lapse for overshoots). The beta "where-to-hit" landing experiments
+(v1.7-v2.0) were tried and reverted on 2026-08-04 because they made movement
+erratic and misses compounding.
+
+- Aim spread gets a smooth distance factor: ~0.94x at very short range (<=80
+  px) ramping to ~1.06x on long jumps (>=320 px), with a neutral crossover
+  around 160 px.
+- The per-move speed ceiling gets a matching small bias (+3% on short moves,
+  -7% at long range) so the ratio between Fitts' required pace and the
+  available ceiling shifts the same way, and late-arrival misses are slightly
+  more common on long jumps.
+
+Measured on Crystalia [Luminosity] (OD10, seed 42, 500 Hz) vs the v1.5
+baseline, segmented by jump distance (aim-miss % by band):
+
+| skill/effort | band | v1.5 miss % | v1.6 miss % |
+|---|---:|---:|---:|
+| 10/40 | <=40 px | 43.9 | 33.8 |
+| 10/40 | 40-80 | 47.6 | 39.8 |
+| 10/40 | 120-180 | 75.0 | 72.7 |
+| 10/40 | >260 | 89.4 | 90.3 |
+| 20/70 | <=40 px | 23.0 | 18.0 |
+| 20/70 | 40-80 | 23.3 | 20.4 |
+| 20/70 | 120-180 | 59.1 | 65.9 |
+| 20/70 | >260 | 85.8 | 90.3 |
+| 50/68 | <=40 px | 4.3 | 4.3 |
+| 50/68 | 40-80 | 1.9 | 2.9 |
+| 50/68 | 120-180 | 30.7 | 22.7 |
+| 50/68 | >260 | 52.2 | 60.2 |
+
+Aggregate accuracy moved ~+0.5-2 pp at low skill (short moves dominate those
+maps); the per-distance split is the intended effect. Skill 99 aim remains
+miss-free; high-skill accuracy is unchanged in shape.
+
 ## v1.5 (jerk-tuned) results
 
 Planner version `jerk-tuned-v1.5` (2026-08-03). Motion is now continuous:
@@ -37,6 +79,38 @@ Motion quality (tokiko's Hard, skill 20/effort 70; 60 Hz display scale):
 | display-scale max speed px/s | 2438 | 2461 |
 
 The old v3 aim sweep remains below for reference.
+
+## Skill categories vs real players (estimates)
+
+osu! does not publish a skill-percentile table, so the mapping below blends
+real-world anchors with the simulator's own measured ladder:
+
+- Real anchors: ~26.8M registered accounts (osu! site footer); the oii+
+  dataset of 134,953 players with 250+ hours fits expected PP ~ 226 x
+  hours^0.488 (so ~3.3k pp at 250 h, ~6.6k pp at 1000 h); community PP
+  consensus tiers (500 pp = starting out, 2k = decent, 4k = good,
+  6-8k = great/top-tier, 10k+ = elite); rank ~100k was around the top 4% of
+  ranked players (2021 forum data).
+- Simulator ladder (this file): skill 10 ~ 61% acc on a 270 BPM Hard (OD6),
+  ~17% on a 7.5* OD10; skill 50 ~ 48-52% on OD10; skill 80 ~ 75%; skill
+  99 ~ 98-99%.
+
+| mode | skill % | rough real-world equivalent |
+|---|---:|---|
+| beginner | 0-14 | <~500 pp; first weeks-months; fails/struggles on Hard |
+| beginner+ | 15-29 | ~500-1000 pp; passes Hard, low acc on Insane |
+| intermediate | 30-44 | ~1k-2k pp; comfortable Hard/Insane |
+| intermediate+ | 45-59 | ~2k-4k pp; plays 6-7* with moderate acc |
+| expert | 60-74 | ~4k-6k pp; solid on 7* |
+| expert+ | 75-87 | ~6k-8k pp; high acc on 7-8* |
+| competitive | 88-95 | ~8k-10k+ pp; top ~1-2%; near-FC on 7-8* |
+| superhuman | 96-99.9 | 10k+ pp; top ~0.1%; 99%+ consistency |
+| max | 100 | machine-perfect baseline (calibration, not a human) |
+
+These are estimates: rank/pp percentiles only cover ranked players, and
+skill in osu! is multi-dimensional (aim/speed/reading). The launcher presets
+use the midpoints (10, 20, 35, 50, 65, 78, 90, 97, 100) and manual % entry
+remains available.
 
 ## Model
 

@@ -10,7 +10,7 @@ from .schemas import HumanProfile, MapObject, MapPlan, TraceFrame
 
 # Bump when trace-generation behaviour changes so the runner's content-addressed
 # trace cache is invalidated (the configuration hash includes this string).
-PLANNER_VERSION = "jerk-tuned-v1.5"
+PLANNER_VERSION = "distance-tuned-v1.6"
 
 
 @dataclass(frozen=True)
@@ -196,10 +196,24 @@ class HumanTracePlanner:
     def _speed_ceiling(self, distance: float) -> float:
         """Per-move speed ceiling: skill sets the base, distance scales it so
         short corrections stay slower/more controlled while long jumps may use
-        more of the ceiling."""
+        more of the ceiling. A gentle distance bias (v1.6) gives short moves a
+        little more speed allowance and long moves a little less, so very short
+        moves are slightly easier to land and long jumps are slightly harder
+        without changing the human speed envelope."""
         anchors = SPEED_CEILING_ANCHORS
         base = float(np.interp(self.skill * 100.0, [a[0] for a in anchors], [a[1] for a in anchors]))
-        scale = float(np.clip(0.55 + 0.45 * (distance / 260.0), 0.55, 1.15))
+        # Distance bias: 1.03 on very short moves, 1.0 around the 160 px
+        # crossover, down to 0.93 on long jumps (with a soft floor so real
+        # players keep a plausible long-jump speed).
+        if distance <= 80.0:
+            scale = 1.03
+        elif distance <= 160.0:
+            scale = 1.03 - 0.03 * (distance - 80.0) / 80.0
+        elif distance <= 320.0:
+            scale = 1.0 - 0.07 * (distance - 160.0) / 160.0
+        else:
+            scale = 0.93
+        scale = float(np.clip(0.55 + 0.45 * (distance / 260.0), 0.55, 1.15) * scale)
         return base * scale
 
     def _advance_motion_states(self, dt_ms: float) -> None:
@@ -418,11 +432,25 @@ class HumanTracePlanner:
         fitts_speed = distance / max(1.0, fitts_ms) * 1000.0
         speed_ratio = float(np.clip(fitts_speed / max(1.0, self._speed_ceiling(distance)), 0.0, 1.0))
 
+        # Distance accuracy factor (v1.6): tightens short moves (~0.94x aim
+        # spread at very short range) and loosens long moves (~1.06x), so
+        # close targets are more reliably hit and far targets miss a little
+        # more often. Smooth, small, and speed-independent.
+        if distance <= 80.0:
+            distance_factor = 0.94
+        elif distance <= 160.0:
+            distance_factor = 0.94 + 0.06 * (distance - 80.0) / 80.0
+        elif distance <= 320.0:
+            distance_factor = 1.0 + 0.06 * (distance - 160.0) / 160.0
+        else:
+            distance_factor = 1.06
+
         sigma = (
             self.aim_sigma_base
             * (1.0 + 0.6 * (1.0 - self.effort))
             * (1.0 + speed_ratio * (0.35 + 0.75 * (1.0 - self.skill)))
             * (1.0 + min(0.45 * strain + 0.25 * self.fatigue, 0.7))
+            * distance_factor
         )
 
         # Mixture of entry-side-biased and uniformly-random landing directions.
