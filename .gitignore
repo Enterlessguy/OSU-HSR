@@ -352,9 +352,22 @@ FodyWeavers.xsd
 /research/human-sim/models/*.joblib
 /research/human-sim/output/*
 !/research/human-sim/output/phase1-aim-benchmark.md
+!/research/human-sim/output/phase2-timing-analysis.md
+!/research/human-sim/output/analysis/
+/research/human-sim/output/analysis/*
+!/research/human-sim/output/analysis/phase2_analyze.py
 /research/human-sim/**/*.pyc
 /research/human-sim/**/__pycache__/
 /research/human-sim/.pytest_cache/
+
+# Local credentials and private signing material
+.env
+.env.*
+*.pem
+*.pfx
+*.p12
+*.key
+credentials*.json
 /research/human-sim/src/*.egg-info/
 /timing-tests/baseline-bin/
 

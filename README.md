@@ -1,147 +1,177 @@
-<p align="center">
-  <img width="500" alt="osu! logo" src="assets/lazer.png">
-</p>
+# HSR Checkpoint 2 Final
 
-# osu!
+HSR (Human Simulator Research) is an offline research fork of osu!lazer for
+generating and replaying deterministic, visibly synthetic osu!standard input
+traces. This checkpoint contains the second-generation mathematical planner,
+guarded Windows input runner, replay research pipeline, and cross-map
+validation tooling.
 
-[![Build status](https://github.com/ppy/osu/actions/workflows/ci.yml/badge.svg?branch=master&event=push)](https://github.com/ppy/osu/actions/workflows/ci.yml)
-[![GitHub release](https://img.shields.io/github/release/ppy/osu.svg)](https://github.com/ppy/osu/releases/latest)
-[![CodeFactor](https://www.codefactor.io/repository/github/ppy/osu/badge)](https://www.codefactor.io/repository/github/ppy/osu)
-[![dev chat](https://discordapp.com/api/guilds/188630481301012481/widget.png?style=shield)](https://discord.gg/ppy)
-[![Crowdin](https://d322cqt584bo4o.cloudfront.net/osu-web/localized.svg)](https://crowdin.com/project/osu-web)
+> [!IMPORTANT]
+> HSR is not an osu! cheat and must not be used with the production client or
+> online score submission. The research build disables login and score
+> submission, generated traces are permanently marked `synthetic: true`, and
+> the runner only accepts its own authenticated local build.
 
-A free-to-win rhythm game. Rhythm is just a *click* away!
+This repository is an independent research fork and is not affiliated with,
+endorsed by, or supported by ppy Pty Ltd. The upstream project is
+[ppy/osu](https://github.com/ppy/osu), pinned here to tag
+`2026.726.0-lazer`.
 
-This is the future – and final – iteration of the [osu!](https://osu.ppy.sh) game client which marks the beginning of an open era! Currently known by and released under the release codename "*lazer*". As in sharper than cutting-edge.
+## Checkpoint status
 
-## Status
+- Mathematical planner version: `timing-sync-v2.11`.
+- Skill and effort profiles from 0 to 100, plus a machine-perfect diagnostic
+  baseline.
+- Shared timing/aim pressure, persistent bias and drift, context-conditioned
+  mistaps, ghost-press handling, fatigue, idle movement, slider tracking, and
+  spinner motion.
+- Continuous minimum-jerk transitions with correlated residual movement,
+  correction submovements, curvature state, speed ceilings, and exact key-event
+  frames.
+- Automatic 500 Hz planning, promoted to 1000 Hz for ultra-dense maps.
+- Hash-bound map/mod/clock-rate validation and deterministic trace caching.
+- 105-map library audit passing across 49,685 objects and more than 9 million
+  generated frames.
+- Python planner suite: 15 tests passing at this checkpoint.
 
-This project is under constant development, but we do our best to keep things in a stable state. Players are encouraged to install from a release alongside their stable *osu!* client. This project will continue to evolve until we eventually reach the point where most users prefer it over the previous "osu!stable" release.
+The mathematical system is intentionally retained as the deterministic
+baseline and future safety envelope for a later learned movement model.
 
-A few resources are available as starting points to getting involved and understanding the project:
+## Architecture
 
-- Detailed release changelogs are available on the [official osu! site](https://osu.ppy.sh/home/changelog/lazer).
-- You can learn more about our approach to [project management](https://github.com/ppy/osu/wiki/Project-management).
-- Track our current efforts [towards improving the game](https://github.com/orgs/ppy/projects/7/views/6).
-
-## Running osu!
-
-If you are just looking to give the game a whirl, you can grab the latest release for your platform:
-
-### Latest release:
-
-| [Windows 10+ (x64)](https://github.com/ppy/osu/releases/latest/download/install.exe) | macOS 12+ ([Intel](https://github.com/ppy/osu/releases/latest/download/osu.app.Intel.zip), [Apple Silicon](https://github.com/ppy/osu/releases/latest/download/osu.app.Apple.Silicon.zip)) | [Linux (x64)](https://github.com/ppy/osu/releases/latest/download/osu.AppImage) | [iOS 13.4+](https://osu.ppy.sh/home/testflight) | [Android 5+](https://github.com/ppy/osu/releases/latest/download/sh.ppy.osulazer.apk) |
-|--------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------| ------------- | ------------- | ------------- |
-
-You can also generally download a version for your current device from the [osu! site](https://osu.ppy.sh/home/download).
-
-If your platform is unsupported or not listed above, there is still a chance you can run the release or manually build it by following the instructions below.
-
-**For iOS/iPadOS users**: The iOS testflight link fills up very fast (Apple has a hard limit of 10,000 users). We reset it occasionally. Please do not ask about this. Check back regularly for link resets or follow [peppy](https://twitter.com/ppy) on twitter for announcements. Our goal is to get the game on mobile app stores very soon so we don't have to live with this limitation.
-
-## Developing a custom ruleset
-
-osu! is designed to allow user-created gameplay variations, called "rulesets". Building one of these allows a developer to harness the power of the osu! beatmap library, game engine, and general UX for a new style of gameplay. To get started working on a ruleset, we have some templates available [here](https://github.com/ppy/osu/tree/master/Templates).
-
-You can see some examples of custom rulesets by visiting the [custom ruleset directory](https://github.com/ppy/osu/discussions/13096).
-
-## Developing osu!
-
-### Prerequisites
-
-Please make sure you have the following prerequisites:
-
-- A desktop platform with the [.NET 8.0 SDK](https://dotnet.microsoft.com/download) installed.
-
-When working with the codebase, we recommend using an IDE with intelligent code completion and syntax highlighting, such as the latest version of [Visual Studio](https://visualstudio.microsoft.com/vs/), [JetBrains Rider](https://www.jetbrains.com/rider/), or [Visual Studio Code](https://code.visualstudio.com/) with the [EditorConfig](https://marketplace.visualstudio.com/items?itemName=EditorConfig.EditorConfig) and [C# Dev Kit](https://marketplace.visualstudio.com/items?itemName=ms-dotnettools.csdevkit) plugin installed.
-
-### Downloading the source code
-
-Clone the repository:
-
-```shell
-git clone https://github.com/ppy/osu
-cd osu
+```text
+osu! beatmap
+    |
+    v
+HumanSim.MapExporter ----> canonical MapPlan (gzip NDJSON)
+    |
+    v
+Python mathematical planner ----> synthetic trace + hash-bound manifest
+    |
+    v
+HumanSim.Runner <---- authenticated named-pipe handshake ----> HSR client mod
+    |
+    v
+ordinary Windows SendInput, guarded by process/window/focus/DPI/map checks
 ```
 
-To update the source code to the latest commit, run the following command inside the `osu` directory:
+### Components
 
-```shell
-git pull
+- `osu.Game.Rulesets.Osu/Mods/OsuModHumanSimulatorResearch.cs` implements the
+  visible research mod and client handshake.
+- `research/HumanSim.MapExporter` exports lazer-decoded beatmaps with effective
+  modded timing, geometry, slider paths, and hit windows.
+- `research/human-sim` contains planning, trace validation, corpus extraction,
+  model fitting, evaluation, and library-audit commands.
+- `research/HumanSim.Runner` validates and dispatches traces through ordinary
+  Windows input while monitoring focus, clock drift, transforms, and process
+  identity.
+- `research/HumanSim.ReplayExtractor` decodes local `.osr` research captures
+  and hashes player identity with a private salt.
+
+See `HANDOFF.md` for detailed implementation history and
+`research/SECURITY_BOUNDARY.md` for the non-negotiable isolation boundary.
+
+## Requirements
+
+- Windows 10 or newer.
+- PowerShell 7 recommended.
+- Python 3.12 or newer.
+- The repository-local .NET 8 SDK under `.dotnet` or a compatible system SDK.
+- A local osu! beatmap library for automatic map selection and live research
+  runs.
+
+Do not commit local beatmaps, replay exports, credentials, raw player data,
+generated traces, or trained binary models.
+
+## Build
+
+The build script isolates .NET and NuGet state inside the repository and enables
+the compile-time research build flag:
+
+```powershell
+.\research\build-research.ps1 -Configuration Release
 ```
 
-### Building
+Build the research tools individually when required:
 
-#### From an IDE
-
-You should load the solution via one of the platform-specific `.slnf` files, rather than the main `.sln`. This will reduce dependencies and hide platforms that you don't care about. Valid `.slnf` files are:
-
-- `osu.Desktop.slnf` (most common)
-- `osu.Android.slnf`
-- `osu.iOS.slnf`
-
-Run configurations for the recommended IDEs (listed above) are included. You should use the provided Build/Run functionality of your IDE to get things going. When testing or building new components, it's highly encouraged you use the `osu! (Tests)` project/configuration. More information on this is provided [below](#contributing).
-
-To build for mobile platforms, you will likely need to run `sudo dotnet workload restore` if you haven't done so previously. This will install Android/iOS tooling required to complete the build.
-
-#### From CLI
-
-You can also build and run *osu!* from the command-line with a single command:
-
-```shell
-dotnet run --project osu.Desktop
+```powershell
+$dotnet = ".\.dotnet\dotnet.exe"
+& $dotnet build .\research\HumanSim.MapExporter\HumanSim.MapExporter.csproj --configfile .\NuGet.Config
+& $dotnet build .\research\HumanSim.ReplayExtractor\HumanSim.ReplayExtractor.csproj --configfile .\NuGet.Config
+& $dotnet build .\research\HumanSim.Runner\HumanSim.Runner.csproj --configfile .\NuGet.Config
 ```
 
-When running locally to do any kind of performance testing, make sure to add `-c Release` to the build command, as the overhead of running with the default `Debug` configuration can be large (especially when testing with local framework modifications as below).
+## Python setup
 
-If the build fails, try to restore NuGet packages with `dotnet restore`.
-
-### Testing with resource/framework modifications
-
-Sometimes it may be necessary to cross-test changes in [osu-resources](https://github.com/ppy/osu-resources) or [osu-framework](https://github.com/ppy/osu-framework). This can be quickly achieved using included commands:
-
-Windows:
-
-```ps
-UseLocalFramework.ps1
-UseLocalResources.ps1
+```powershell
+Set-Location .\research\human-sim
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[test]"
 ```
 
-macOS / Linux:
+## Run
 
-```ps
-UseLocalFramework.sh
-UseLocalResources.sh
+The interactive launcher builds all components, updates the Python environment,
+prompts for skill and effort, then starts the guarded automatic-planning runner:
+
+```powershell
+.\research\run-dev-build.ps1
 ```
 
-Note that these commands assume you have the relevant project(s) checked out in adjacent directories:
+Alternatively, after building:
 
+```powershell
+.\research\human-sim\.venv\Scripts\human-sim.exe auto-run `
+  ".\osu.Desktop\bin\Debug\net8.0\osu!.exe" `
+  --mode profile --skill 50 --effort 68
 ```
-|- osu            // this repository
-|- osu-framework
-|- osu-resources
+
+Machine-perfect infrastructure calibration uses `--mode perfect`. It is not a
+human profile.
+
+## Test and audit
+
+```powershell
+Set-Location .\research\human-sim
+.\.venv\Scripts\python.exe -m pytest tests -q
+
+# Deterministic sample of the installed osu!standard library.
+.\.venv\Scripts\human-sim.exe audit-library .\output\library-audit.json --limit 100
 ```
 
-### Code analysis
+The phase-two benchmark harness is
+`research/human-sim/output/analysis/phase2_analyze.py`. Its estimates are useful
+for regression testing but do not replace authoritative in-client judgements or
+held-out real-player validation.
 
-Before committing your code, please run a code formatter. This can be achieved by running `dotnet format` in the command line, or using the `Format code` command in your IDE.
+## Data and credentials
 
-We have adopted some cross-platform, compiler integrated analyzers. They can provide warnings when you are editing, building inside IDE or from command line, as-if they are provided by the compiler itself.
+Corpus collection reads `OSU_CLIENT_ID` and `OSU_CLIENT_SECRET` only from the
+environment. Replay extraction requires `HUMAN_SIM_PLAYER_SALT`; raw usernames
+are not written to derived datasets. Raw `.osr` files, Parquet corpora, generated
+traces, logs, credentials, and fitted models are ignored by Git.
 
-JetBrains ReSharper InspectCode is also used for wider rule sets. You can run it from PowerShell with `.\InspectCode.ps1`. Alternatively, you can install ReSharper or use Rider to get inline support in your IDE of choice.
+The small `human.parquet` and `synthetic.parquet` files included in local
+development output are fixtures, not evidence of human realism. A real,
+consented and player/map-grouped corpus remains the next calibration stage.
 
-## Contributing
+## Security
 
-When it comes to contributing to the project, the two main things you can do to help out are reporting issues and submitting pull requests. Please refer to the [contributing guidelines](CONTRIBUTING.md) to understand how to help in the most effective way possible.
+Read `SECURITY.md` and `research/SECURITY_BOUNDARY.md` before changing the
+runner, authentication handshake, online API behavior, score submission, or
+trace markers. Changes that weaken those controls are outside project scope.
 
-If you wish to help with localisation efforts, head over to [crowdin](https://crowdin.com/project/osu-web).
+## Documentation
 
-Our team believes in **human contributions**. Any contribution – be it an issue report or a pull request – which is created by, documented by, or aided by AI/LLM usage will typically be **closed and locked without further discussion**.
+- `HANDOFF.md` - implementation history, key files, commands, and open work.
+- `research/human-sim/README.md` - planner and corpus-tool documentation.
+- `research/SECURITY_BOUNDARY.md` - enforced research isolation model.
+- `research/human-sim/output/phase1-aim-benchmark.md` - phase-one evidence.
+- `research/human-sim/output/phase2-timing-analysis.md` - phase-two analysis.
 
-## Licence
+## Licence and upstream attribution
 
-*osu!*'s code and framework are licensed under the [MIT licence](https://opensource.org/licenses/MIT). Please see [the licence file](LICENCE) for more information. [tl;dr](https://tldrlegal.com/license/mit-license) you can do whatever you want as long as you include the original copyright and license notice in any copy of the software/source.
-
-Please note that this *does not cover* the usage of the "osu!" or "ppy" branding in any software, resources, advertising or promotion, as this is protected by trademark law.
-
-Please also note that game resources are covered by a separate licence. Please see the [ppy/osu-resources](https://github.com/ppy/osu-resources) repository for clarifications.
+The fork remains under the upstream MIT licence in `LICENCE`. The osu! name,
+branding, and resources are subject to ppy's separate trademark and resource
+terms. Do not present this fork as an official osu! build.

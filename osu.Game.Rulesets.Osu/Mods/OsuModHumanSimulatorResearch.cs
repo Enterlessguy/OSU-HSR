@@ -60,6 +60,8 @@ namespace osu.Game.Rulesets.Osu.Mods
         private string? runToken;
         private long lastHeartbeatQpc;
         private int heartbeatWritePending;
+        private double startClockTimeMs;
+        private int settledTransformSent;
         private volatile bool pipeFailed;
         private volatile bool runnerComplete;
         private volatile bool gameplayStartRequested;
@@ -214,6 +216,25 @@ namespace osu.Game.Rulesets.Osu.Mods
                 }, startSyncQpc);
             }
 
+            // The playfield transform sampled on the first running-clock frame
+            // is transient (layout settling), which shifts every dispatched
+            // cursor by a constant offset for the whole run (measured ~13 osu
+            // px in Y on the benchmark host -> systematic in-game misses).
+            // Re-sample once the playfield has settled and send the corrected
+            // transform; the first press is always >= ~1.3 s in, so the runner
+            // adopts it before any key matters.
+            if (startMessageSent && playfield.Clock.IsRunning
+                && playfield.Clock.CurrentTime / clockRate - startClockTimeMs >= 500.0
+                && Interlocked.CompareExchange(ref settledTransformSent, 1, 0) == 0)
+            {
+                Vector2 origin = playfield.GamefieldToScreenSpace(Vector2.Zero);
+                Vector2 xAxis = playfield.GamefieldToScreenSpace(new Vector2(512, 0));
+                Vector2 yAxis = playfield.GamefieldToScreenSpace(new Vector2(0, 384));
+                string? token = runToken;
+                if (token != null)
+                    _ = sendTransformUpdateAsync(Stopwatch.GetTimestamp(), origin, xAxis, yAxis, token);
+            }
+
             if (startMessageSent && playfield.Clock.IsRunning)
                 gameplayClockObservedRunning = true;
             else if (gameplayClockObservedRunning && !playfield.Clock.IsRunning)
@@ -252,6 +273,7 @@ namespace osu.Game.Rulesets.Osu.Mods
                 {
                     Interlocked.Exchange(ref lastHeartbeatQpc, now);
                     startMessageSent = true;
+                    startClockTimeMs = message.GameplayClockTimeMs;
                 }).ConfigureAwait(false);
             }
             finally
@@ -276,6 +298,26 @@ namespace osu.Game.Rulesets.Osu.Mods
             finally
             {
                 Interlocked.Exchange(ref heartbeatWritePending, 0);
+            }
+        }
+
+        private async Task sendTransformUpdateAsync(long now, Vector2 origin, Vector2 xAxis, Vector2 yAxis, string token)
+        {
+            try
+            {
+                await writeMessageAsync(JsonSerializer.Serialize(new
+                    {
+                        kind = "transform_update",
+                        run_token = token,
+                        playfield_origin = new[] { origin.X, origin.Y },
+                        playfield_x_axis = new[] { xAxis.X, xAxis.Y },
+                        playfield_y_axis = new[] { yAxis.X, yAxis.Y },
+                    }),
+                    () => Interlocked.Exchange(ref lastHeartbeatQpc, now)).ConfigureAwait(false);
+            }
+            catch
+            {
+                // writeMessageAsync already marks the pipe failed on error.
             }
         }
 

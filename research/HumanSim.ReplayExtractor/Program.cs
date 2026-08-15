@@ -33,6 +33,10 @@ public static class Program
                 player_hash = hash(salt + "\0" + score.ScoreInfo.User.Username),
                 mods = score.ScoreInfo.Mods.Select(m => m.Acronym).Order().ToArray(),
                 frame_count = frames.Length,
+                statistics = score.ScoreInfo.Statistics.ToDictionary(
+                    pair => pair.Key.ToString(),
+                    pair => pair.Value
+                ),
             }));
             foreach (OsuReplayFrame frame in frames)
             {

@@ -34,15 +34,16 @@ the `HUMAN_SIM_SELECTION_PIPE` channel), so by the time you click play the
 loading-screen handshake is served from the pre-planned or cached result
 instead of parsing on the spot. Use `--mode profile` when moving from
 infrastructure calibration to a percentile profile. The trace remains at 500 Hz
-by default for key-transition precision; the OS cursor defaults to a
-sustainable 240 Hz cadence and always dispatches an exact trace position with
-every key transition. The runner stays alive between maps (a per-map abort such
+by default for key-transition precision; ultra-dense maps are automatically
+promoted to 1000 Hz. The cursor cadence is capped at 1000 Hz and cannot exceed
+the trace rate, and every key transition carries an exact trace position. The
+runner stays alive between maps (a per-map abort such
 as focus loss or a window change only ends that map, not the session), and
 writes a timestamped `auto-run-*.log` beside the output traces. The runner
 executes at high process priority with 1 ms timer resolution and a
 drift-correcting gameplay clock model; the client heartbeats every 50 ms so the
-model stays tight. The cursor is moved at a cadence that
-matches the trace rate (1000 Hz by default) via absolute `SendInput` moves,
+model stays tight. The cursor is moved at a cadence that matches the effective
+trace rate via absolute `SendInput` moves,
 teleporting any distance in a single event with keys batched alongside. The planner reserves a short settle window before every hit
 so the cursor is already on the target when the OS/game input state catches up;
 this prevents fast-jump head misses. A planner version is folded into the
@@ -50,15 +51,17 @@ configuration hash so trace caches invalidate automatically when generation
 changes. Supported mods are `HD`, `HR`, `DT`/custom speeds up to 2.00x, `HT`,
 and `FL`, cached separately per clock rate.
 
-## Skill and effort (Phase 1: aim)
+## Skill, effort, aim, and timing
 
 `plan` and `auto-run` accept `--skill 0-100` and `--effort 0-100`. Skill sets
-the aim ceiling (interpolated aim-sigma anchors), effort sets consistency and
-aim-lapse frequency. The overall evaluation is the strength function
+the aim and timing ceiling, while effort controls consistency, fatigue, lapse
+frequency, and stress response. The overall evaluation is the strength function
 `str(t) = 1 - weakness(t)`, a weighted sum of the six criteria (aim, timing,
-randomness, correlation, curvature, fatigue); Phase 1 implements aim and
-fatigue. Each plan reports `strength` and `aim` diagnostics; both values are
-part of the configuration hash so caches separate per skill/effort.
+randomness, correlation, curvature, fatigue). Aim, timing, and fatigue are
+wired into the checkpoint-two metric; randomness, correlation, and curvature
+remain explicit future criteria. Each plan reports `strength`, `aim`, and
+`timing` diagnostics; profile values are part of the configuration hash so
+caches separate per skill and effort.
 
 The desktop launcher (`research\run-dev-build.ps1`, shortcut "OSU Human
 Simulator") prompts for both values and recommends an effort sweet spot for
@@ -68,9 +71,8 @@ the entered skill:
 e_effort = clamp(1 - 0.08 / (1 - skill/100)^2, 0.40, 1.00)
 ```
 
-The formula keeps the aim-lapse probability near a typical human rate
-(~0.2% per dense object) for the given skill: beginners need high effort
-(~88 at skill 20), experts can play relaxed (~40 at skill 70+).
+The recommendation is a mathematical calibration aid rather than a claim about
+the global osu! player population. Real-player corpus calibration remains open.
 
 Before live testing, `human-sim audit-library report.json --limit 100` runs a
 deterministic cross-section of the installed osu!standard library through the

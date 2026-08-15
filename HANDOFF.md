@@ -47,6 +47,39 @@ Pinned to upstream lazer tag `2026.726.0-lazer`, branch
   wandering, aim-lapse probability
   `(1-skill)^2*(1-effort)*(0.02+0.06*strain)`, and inflates aim/timing sigma.
   Overlapping presses keep the cursor on-path and miss naturally.
+- Timing/aim sync (`timing-sync-v2.11`, Phase 2): one shared pressure
+  state plus short stress episodes drive both aim and timing, so dense
+  patterns degrade both systems together. Context-aware timing scales
+  (streams/bursts looser, sliders/jumps tighter), per-run early/late bias +
+  session drift, heavy-tailed mistaps (50s and timing misses, concentrated in
+  streams), and ghost presses (press fired before the cursor could arrive) are
+  tracked separately so timing-induced misses are not misattributed to aim.
+  Timing is wired into the strength function (0.25 weight). The miss mix at
+  low/mid skill moved from 100% aim to ~12-39% timing-attributable while the
+  accuracy ladder is preserved. See
+  `research\human-sim\output\phase2-timing-analysis.md`. Idle wandering
+  (v2.2, reworked v2.3): when a long gap (>= ~350 ms) exists - map breaks,
+  cutscenes, pre-roll - the cursor doodles (12% figure-8, 12% circle, ~76%
+  loose random 3-sine paths) with smooth time-varying speed, a slow centre
+  drift, and hand-tremor jitter. The doodle anchors near the next key and
+  converges onto it via a (1-u)^k envelope, so the return distance at the
+  approach start is ~0 - mathematically eliminating wander-induced
+  late-arrival misses (verified: 0 misses after gap >= 900 ms on Haiboku
+  50/80 vs 2 before). Perfect baseline never wanders.
+  Timing error shape (v2.4): mistaps are now an OK-biased 3-band mixture
+  (~65% OK, ~25% MEH, ~10% miss), the miss probability falls quadratically
+  with skill and with (1-effort)^1.5, the AR tap is capped tighter (74% of
+  MEH), and aim landings are ~8% tighter, so a 90%+ run produces a realistic
+  judgement ladder: on Haiboku Hard at 50/80 the 5-seed average is
+  575x300 / 29x100 / 3x50 / 2 miss (seed 42: 0 misses).
+  Aim landing (v2.5): landings are now an elliptical Gaussian anchored just
+  short of the circle centre along the approach axis - overwhelming bias for
+  the centre neighbourhood, entry-side "beginning" and middle most likely,
+  far side and edges unlikely - with a real-player undershoot bias (measured
+  ~68% undershoot vs 32% overshoot at 50/80). Plan misses on Haiboku 50/80:
+  2-3; on Tear Rain Insane 50/80: 4 average (0.4-0.6%), all well inside the
+  old entry-edge placement's margin. Lapse base cut again (0.002) so 90%+
+  runs keep near-zero misses; hard-map misses stay driven by strain/speed.
 - Motion (v1.5 `jerk-tuned-v1.5`): continuous slow wander + persistent curve
   state replace per-transition random noise, so paths stay nearly straight
   with subtle curves instead of per-frame squiggles. Per-skill distance-scaled
@@ -65,15 +98,18 @@ Pinned to upstream lazer tag `2026.726.0-lazer`, branch
 ## Key files
 
 - `research\human-sim\src\human_sim\planner.py` - trace generation, skill/effort
-  model, strength function, continuous-motion states, overlap/speed guards.
-  `PLANNER_VERSION` at top (currently `jerk-tuned-v1.5`); bump it when
-  generation changes and mirror in the runner's `canonicalConfiguration`.
+  model, strength function, continuous-motion states, shared pressure/timing
+  state, overlap/speed guards. `PLANNER_VERSION` at top (currently
+  `timing-sync-v2.11`); bump it when generation changes and mirror in the
+  runner's `canonicalConfiguration`.
 - `research\human-sim\src\human_sim\cli.py` - CLI; `--skill/--effort`;
   configuration hash (must match runner's canonical mirror byte-for-byte).
 - `research\HumanSim.Runner\Program.cs` - runner, cache keys, config hash,
   dense-map detection, pre-plan dedupe, teardown grace.
 - `research\HumanSim.MapExporter\Program.cs` - exporter; supported mods.
 - `research\human-sim\output\phase1-aim-benchmark.md` - skill/effort benchmark.
+- `research\human-sim\output\phase2-timing-analysis.md` - Phase-2 timing/aim
+  sync design, real-player grounding, before/after evidence.
 - `timing-tests\benchmark\` - plans, traces, replays, acceptance logs.
 - `research\SECURITY_BOUNDARY.md` - isolation rules; do not change without
   explicit user approval (in-process input mode would alter it).
@@ -120,9 +156,13 @@ Runner logs: `research\human-sim\output\auto-run-*.log`. Client logs:
    loose.
 2. Phase 1 remaining criteria: randomness, correlated pattern (movement
    memory keyed by direction+distance), curvature/jitter habits, fatigue
-   strength curve with variance - wire each into `STRENGTH_WEIGHTS`.
-3. Phase 2: corpus calibration (collect/extract/fit) so skill levels map to
-   realistic score distributions per map difficulty; score-mix validation loop.
+   strength curve with variance - wire each into `STRENGTH_WEIGHTS` (timing is
+   now wired; randomness/correlation/curvature still contribute 0).
+3. Phase 2 corpus calibration: real-player replay fitting (collect/extract/fit
+   via the osu! API) is still open - `OSU_CLIENT_ID/SECRET` are not configured
+   in this environment, so skill anchors blend published community benchmarks
+   with simulator measurements. A wider map corpus may refine the mistap and
+   context constants tuned on the current 5-map benchmark set.
 4. Optional: in-process replay-style input mode (needs user decision - changes
    the security boundary; the only way to hit offscreen objects and remove
    frame-rate sampling limits).
@@ -132,6 +172,109 @@ Runner logs: `research\human-sim\output\auto-run-*.log`. Client logs:
 
 ## Recent history (most valuable fixes)
 
+- v2.10 (2026-08-05): dense-map miss reduction after triangles Expert sk65/ef90
+  showed 43 in-game misses (all aim, plan 42). Not a slider-overlap bug (0 of
+  28 overlapping objects missed) - the map is ultra-dense (43% intervals
+  <= 94 ms) with 210-290 px jumps, and the old 48 ms park + 2.4x movement
+  floor left too little time to complete moves. Now: density-adaptive park
+  (16 ms on intervals < 140 ms, else 32 ms) and a realistic ~1.9x movement
+  floor (min-jerk peak is 1.875x) with the hard per-step resample clamp
+  retained as the flick guard. triangles Expert: 42 -> 12 planned misses
+  (92.5%); Tear Rain sk60/ef90 1; Haiboku 50/80 2; My Love DT 3. Low-skill
+  OD10 crept up (Kingborn 10/40 ~33%) as a side effect.
+- v2.9-fix (2026-08-05): true residual-miss root cause found. The remaining
+  in-game aim misses (Tear Rain sk65/ef90: 5 misses, all aim, cursor 3.6-5.6 px
+  outside) traced to a constant -14 osu px Y offset between the dispatched and
+  game-visible cursor - a translation error, not the transform. The runner was
+  sending window-relative playfield coordinates without adding the window's
+  on-screen client origin (the window sits at ~(0, 11 px), hence dx ~ 0 and
+  dy ~ -14). Fixed by adding `guard.ClientRect.Left/Top` to the dispatched
+  physical coordinates before SendInput. Applies on the next launch (the
+  current session holds the runner exe).
+- v2.9 (2026-08-04): skill-gated miss nerf above 50% skill (quadratic collapse
+  to an 8% floor, context-exempt on fast/complex sections) + 48 ms pre-press
+  park for delivery lag. Tear Rain sk60/ef90: 14 in-game misses -> 0 planned.
+- v2.8 (2026-08-04): aim-distribution realism after heatmap review - stronger
+  along-travel elongation (1.63), visible undershoot centroid (-7.9 px, 81%),
+  persistent bias state (lag-1 autocorr 0.15), tighter angular cone, rarer
+  uniform-direction landings, asymmetric short-arm tail, distance contrast.
+  Chasers - Lost [Hard]: 0-1 planned misses, heatmap now reads as human.
+- v2.7 (2026-08-04): aim edge guard (no rim landings at high acc), figure-8-
+  dominant large-range idle wander (65/20/15), and continuous flow motion
+  across gaps (no park-and-shoot; 32 ms pre-press park; curved paths).
+  triangles Hard: 4 in-game rim misses -> 1 planned. Motion: stillness median
+  ~1 ms, wander spans up to ~320 px at human speeds.
+- v2.6 (2026-08-04): fast-section miss shaping - mistaps become OK/MEH-biased
+  (5% miss band), effort kills mistaps quadratically at ef 95+, aim spreads
+  less on fast moves, 48 ms press park covers game-frame lag. User's My Love
+  DT run: 10 in-game misses -> 4 planned at 84% acc; 300/100/50 shape matches
+  real high-accuracy play (Goods and OKs overwhelm MEHs and misses).
+- v2.5-fix (2026-08-04): in-game miss root cause found and fixed. The
+  playfield transform sampled on the first running-clock frame is transient,
+  which shifted every dispatched cursor by a constant ~12.6 osu px in Y for
+  the whole run (game-judged misses: Tear Rain 18, Haiboku 16 - all aim).
+  The HSR mod now re-samples the settled transform ~500 ms after gameplay
+  start and sends a `transform_update`; the runner validates and adopts it
+  per-frame (before the first press, which is >= 1.3 s in). Verified against
+  the attached replays: 17 of 18 Tear Rain misses had the trace cursor
+  inside the circle at press (fixable by the correction); 1 was genuine.
+  Fast/dense-section miss shaping (v2.6): mistap miss band cut 10% -> 5%
+  (OK 65% / MEH 30% / miss 5%), effort suppresses mistaps quadratically
+  (ef 95+ ~none), aim speed-inflation gentler on fast moves, and the press
+  parks 48 ms early (was 24) so game-frame lag cannot push near-misses out.
+  Measured on the user's My Love DT run (sk50/ef95): game 10 misses ->
+  plan 4 (434x300 / 123x100 / 4x50); Haiboku 50/80 and Tear Rain 50/80:
+  0-2 plan misses.
+  v2.7 (motion + misses): aim landings get a skill-tightening edge guard
+  (max = radius x (0.90 - 0.25*skill)) so 90%+ runs never rim-land; the idle
+  wander is now figure-8 dominant (65% / 20% circle / 15% random) roaming an
+  80-200 px neighbourhood of the next key with time-scaled speeds; and
+  transitions flow - the cursor glides continuously across each gap (only a
+  32 ms pre-press park) with per-move curvature variation, eliminating the
+  park-and-shoot "bullet" look. Measured: triangles Hard 4 in-game misses ->
+  1 planned; My Love DT 10 -> 2; Haiboku 50/80 2; Tear Rain 1. Stillness
+  median ~1 ms; wander spans 163-321 px at ~445 px/s.
+  Aim distribution realism (v2.8): after an external reviewer flagged the aim
+  heatmap as too round/isotropic (like a centered Gaussian), the landing cloud
+  is now clearly anisotropic and human: elongation std_along/std_perp ~1.6
+  (was 1.3), a visible undershoot centroid (mean -7.9 px, 81% short-of-centre
+  hits vs 65% before), a persistent aim-bias state giving lag-1 autocorrelation
+  ~0.15 (was ~0) so consecutive landings drift in runs, tighter angular cone,
+  weaker uniform-direction mixture, an asymmetric short-arm tail, and stronger
+  short/long distance contrast. Verified on Chasers - Lost [Hard] sk50/ef90.
+  Skill-gated miss nerf (v2.9): above 50% skill, miss probability collapses
+  roughly quadratically to an 8% floor at skill 100 - applied to aim lapses,
+  the mistap miss-band (downgrades to MEH), and ghost presses (rushed taps
+  become late OK/MEH catch-up hits). Very fast/complex sections (high
+  strain/pressure) partially escape the nerf so overfaced maps keep misses.
+  Pre-press park raised 32 -> 48 ms to cover the measured ~27 ms game-visible
+  delivery lag. Verified: Tear Rain sk60/ef90 14 in-game misses -> 0 planned;
+  Haiboku 50/80 0; Kingborn sk80 OD10 stays ~83% with its fast-section misses.
+- v2.5 (2026-08-04): centre-anchored undershoot-biased aim landings (was
+  entry-edge-leaning). Landings cluster around the circle centre with the
+  entry side/middle most likely and edges unlikely; undershoot outnumbers
+  overshoot ~2:1. Plan misses at 50/80 drop to ~0.3-0.6% on 90%+ maps, which
+  also gives the SendInput execution path far more margin inside the circle.
+- v2.4 (2026-08-04): OK-biased timing inaccuracies - mistap mixture ~65% OK /
+  ~25% MEH / ~10% miss, quadratic skill + effort^1.5 miss suppression, tighter
+  AR cap and aim landings. 90%+ runs now show the real-player judgement shape
+  (300s dominate, oks 25-30, mehs 3-4, misses 1-2 on Haiboku 50/80). Also
+  fixed the replay-analysis press matcher (global greedy instead of per-object
+  nearest), which was inflating miss counts ~4x on dense sections.
+- v2.3 (2026-08-04): idle-wander rework after replay diagnosis - deterministic
+  doodles cut to 24%, ~76% random 3-sine paths, smooth time-varying speed
+  (measured p10 12 -> p90 254 px/s), doodle anchored 35-110 px from the next
+  key and converging onto it via a (1-u)^k envelope. Removes wander-induced
+  late-arrival misses by construction (verified on the attached Haiboku run:
+  2 big-gap misses before, 0 after).
+- v2.2 (2026-08-04): idle wandering for long gaps - figure-8/circle/random
+  smooth doodles with hand-tremor jitter, entering via min-jerk and ending in
+  time for the real approach (perfect baseline unaffected).
+- v2.1 (2026-08-04): Phase-2 timing/aim sync - shared pressure + stress
+  episodes, context-aware timing, early/late bias + drift, mistaps, ghost-press
+  attribution, timing wired into strength. Miss mix at low/mid skill went from
+  100% aim to ~23-44% timing-attributable with the accuracy ladder preserved;
+  UR at skill 99 now sits at 58-73 (top players often <100).
 - v1.5: continuous wander/curve states (squiggles gone: path/disp p50 1.06,
   display reversals halved); speed-ceiling min-duration unit fix + min-jerk
   peak factor + hard trace guard (flicks impossible); chord negative-delta

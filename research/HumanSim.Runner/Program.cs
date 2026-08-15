@@ -158,9 +158,11 @@ internal static class Program
                         Console.WriteLine($"Research window: {guard.ClientRect.Width}x{guard.ClientRect.Height} physical pixels ({guard.ClientRect.AspectRatio:F4}:1); virtual screen: {guard.VirtualScreen.Width}x{guard.VirtualScreen.Height}; DPI {guard.Dpi}.");
                     }
                     var connection = new ConnectionMonitor(reader, token, start, !options.DisableClockFit);
+                    var transformHolder = new TransformHolder(PlayfieldTransform.FromStart(start));
+                    connection.AttachTransform(transformHolder, guard, options.TimingOnly);
                     connection.Start();
                     Console.WriteLine($"Gameplay clock at launch: {start.GameplayClockTimeMs:F3} effective ms at {hello.ClockRate:F3}x; trace timeline starts at {selectedTrace.Header.TimelineStartEffectiveMs:F3} ms.");
-                    execute(selectedTrace, hello, start, process, window, guard, options, connection);
+                    execute(selectedTrace, hello, start, process, window, guard, options, connection, transformHolder);
                     // Best-effort completion notification. If the client has
                     // already dropped the connection (user quit, map ended,
                     // harness closed), a completed run must not fail.
@@ -466,7 +468,7 @@ internal static class Program
         // sorted keys, compact separators, and Python-style float formatting.
         // Sorted key order must match Python: "percentile" < "perfect_baseline".
         double effectiveSkill = options.SkillLevel >= 0 ? options.SkillLevel : options.Percentile;
-        string json = $"{{\"effort_level\":{pythonFloat(options.EffortLevel)},\"percentile\":{pythonFloat(options.Percentile)},\"perfect_baseline\":{(options.AutoPlanMode == "perfect" ? "true" : "false")},\"planner_version\":\"distance-tuned-v1.6\",\"sample_rate_hz\":{options.SampleRateHz},\"seed\":{options.Seed},\"skill_level\":{pythonFloat(effectiveSkill)}}}";
+        string json = $"{{\"effort_level\":{pythonFloat(options.EffortLevel)},\"percentile\":{pythonFloat(options.Percentile)},\"perfect_baseline\":{(options.AutoPlanMode == "perfect" ? "true" : "false")},\"planner_version\":\"timing-sync-v2.11\",\"sample_rate_hz\":{options.SampleRateHz},\"seed\":{options.Seed},\"skill_level\":{pythonFloat(effectiveSkill)}}}";
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant();
     }
 
@@ -587,7 +589,7 @@ internal static class Program
             Console.WriteLine($"[{label}] {stderr}");
     }
 
-    private static void execute(Trace trace, Handshake h, StartMessage start, Process process, nint window, WindowGuard guard, Options options, ConnectionMonitor connection)
+    private static void execute(Trace trace, Handshake h, StartMessage start, Process process, nint window, WindowGuard guard, Options options, ConnectionMonitor connection, TransformHolder transformHolder)
     {
         // osu-framework's screen-space coordinates are expressed in logical
         // pixels. SendInput absolute mouse coordinates are physical virtual-
@@ -678,8 +680,16 @@ internal static class Program
                 }
 
                 double tx = f.X / 512.0, ty = f.Y / 384.0;
-                double x = (start.PlayfieldOrigin[0] + tx * (start.PlayfieldXAxis[0] - start.PlayfieldOrigin[0]) + ty * (start.PlayfieldYAxis[0] - start.PlayfieldOrigin[0])) * logicalToPhysical;
-                double y = (start.PlayfieldOrigin[1] + tx * (start.PlayfieldXAxis[1] - start.PlayfieldOrigin[1]) + ty * (start.PlayfieldYAxis[1] - start.PlayfieldOrigin[1])) * logicalToPhysical;
+                PlayfieldTransform t = transformHolder.Current;
+                // The mod's playfield transform is expressed relative to the
+                // window's client area. SendInput needs absolute virtual-
+                // desktop coordinates, so add the window's on-screen client
+                // origin. Without this the whole path was shifted by the
+                // window position (measured ~14 osu px in Y on this host),
+                // which pushed rim landings outside the circle in-game even
+                // though the planned trace was clean.
+                double x = (t.OriginX + tx * (t.XAxisX - t.OriginX) + ty * (t.YAxisX - t.OriginX)) * logicalToPhysical + guard.ClientRect.Left;
+                double y = (t.OriginY + tx * (t.XAxisY - t.OriginY) + ty * (t.YAxisY - t.OriginY)) * logicalToPhysical + guard.ClientRect.Top;
                 double latenessUs = Math.Max(0, (dispatchQpc - targetQpc) * 1_000_000.0 / Stopwatch.Frequency);
                 dispatchLatenessUs.Add(latenessUs);
                 if ((f.K1 && !k1) || (f.K2 && !k2))
@@ -775,6 +785,38 @@ internal static class Program
 
 }
 
+internal sealed class PlayfieldTransform
+{
+    public readonly double OriginX, OriginY, XAxisX, XAxisY, YAxisX, YAxisY;
+
+    public PlayfieldTransform(double originX, double originY, double xAxisX, double xAxisY, double yAxisX, double yAxisY)
+    {
+        OriginX = originX;
+        OriginY = originY;
+        XAxisX = xAxisX;
+        XAxisY = xAxisY;
+        YAxisX = yAxisX;
+        YAxisY = yAxisY;
+    }
+
+    public static PlayfieldTransform FromStart(StartMessage start)
+        => FromArrays(start.PlayfieldOrigin, start.PlayfieldXAxis, start.PlayfieldYAxis);
+
+    public static PlayfieldTransform FromArrays(double[] origin, double[] xAxis, double[] yAxis)
+        => new(origin[0], origin[1], xAxis[0], xAxis[1], yAxis[0], yAxis[1]);
+}
+
+internal sealed class TransformHolder
+{
+    private volatile PlayfieldTransform current;
+
+    public TransformHolder(PlayfieldTransform initial) => current = initial;
+
+    public PlayfieldTransform Current => current;
+
+    public void Update(PlayfieldTransform transform) => current = transform;
+}
+
 internal sealed class ConnectionMonitor
 {
     private const int max_samples = 128;
@@ -786,6 +828,9 @@ internal sealed class ConnectionMonitor
     private readonly long initialQpc;
     private readonly double initialGameplayClockTimeMs;
     private readonly bool fitEnabled;
+    private TransformHolder? transformHolder;
+    private WindowGuard guard;
+    private bool timingOnly;
     private long clockQpc;
     private double gameplayClockTimeMs;
     private long lastHeartbeat = Stopwatch.GetTimestamp();
@@ -818,9 +863,35 @@ internal sealed class ConnectionMonitor
             while ((line = reader.ReadLine()) != null)
             {
                 using JsonDocument message = JsonDocument.Parse(line);
-                if (message.RootElement.GetProperty("kind").GetString() != "heartbeat"
-                    || message.RootElement.GetProperty("run_token").GetString() != token)
-                    throw new InvalidDataException("Malformed research heartbeat.");
+                string kind = message.RootElement.GetProperty("kind").GetString() ?? "";
+                string messageToken = message.RootElement.GetProperty("run_token").GetString() ?? "";
+                if (messageToken != token)
+                    throw new InvalidDataException("Research message token mismatch.");
+
+                if (kind == "transform_update")
+                {
+                    double[] origin = readPoint(message.RootElement, "playfield_origin");
+                    double[] xAxis = readPoint(message.RootElement, "playfield_x_axis");
+                    double[] yAxis = readPoint(message.RootElement, "playfield_y_axis");
+                    try
+                    {
+                        if (!timingOnly)
+                            guard.ValidatePlayfield(origin, xAxis, yAxis);
+                        transformHolder?.Update(PlayfieldTransform.FromArrays(origin, xAxis, yAxis));
+                        Console.WriteLine($"Settled playfield transform: O=({origin[0]:F2},{origin[1]:F2}) X=({xAxis[0]:F2},{xAxis[1]:F2}) Y=({yAxis[0]:F2},{yAxis[1]:F2})");
+                    }
+                    catch (Exception exception)
+                    {
+                        // A transient/settling transform must not abort the
+                        // run; keep the previous mapping and continue.
+                        Console.WriteLine($"Ignoring unsettled playfield transform: {exception.Message}");
+                    }
+                    Interlocked.Exchange(ref lastHeartbeat, Stopwatch.GetTimestamp());
+                    continue;
+                }
+
+                if (kind != "heartbeat")
+                    throw new InvalidDataException("Malformed research message.");
                 long qpc = message.RootElement.GetProperty("qpc").GetInt64();
                 double clockTime = message.RootElement.GetProperty("gameplay_clock_time_ms").GetDouble();
                 if (qpc <= 0 || !double.IsFinite(clockTime))
@@ -852,6 +923,27 @@ internal sealed class ConnectionMonitor
         }
         disconnected = true;
     });
+
+    public void AttachTransform(TransformHolder holder, WindowGuard windowGuard, bool timingOnly)
+    {
+        transformHolder = holder;
+        guard = windowGuard;
+        this.timingOnly = timingOnly;
+    }
+
+    private static double[] readPoint(JsonElement element, string property)
+    {
+        if (!element.TryGetProperty(property, out JsonElement point) || point.GetArrayLength() != 2)
+            throw new InvalidDataException($"Research transform property {property} is invalid.");
+        double[] values = new double[2];
+        for (int i = 0; i < 2; i++)
+        {
+            values[i] = point[i].GetDouble();
+            if (!double.IsFinite(values[i]))
+                throw new InvalidDataException($"Research transform property {property} is not finite.");
+        }
+        return values;
+    }
 
     public void EnsureAlive()
     {
@@ -1256,11 +1348,16 @@ internal readonly record struct WindowGuard(Native.RECT Rect, Native.RECT Client
     }
 
     public void ValidatePlayfield(StartMessage start)
+        => ValidatePlayfield(start.PlayfieldOrigin, start.PlayfieldXAxis, start.PlayfieldYAxis);
+
+    public void ValidatePlayfield(double[] originValues, double[] xAxisValues, double[] yAxisValues)
     {
+        if (originValues.Length != 2 || xAxisValues.Length != 2 || yAxisValues.Length != 2)
+            throw new InvalidDataException("Physical playfield transform is invalid.");
         double scale = 96.0 / Dpi;
-        (double X, double Y) origin = (start.PlayfieldOrigin[0] * scale, start.PlayfieldOrigin[1] * scale);
-        (double X, double Y) xAxis = (start.PlayfieldXAxis[0] * scale, start.PlayfieldXAxis[1] * scale);
-        (double X, double Y) yAxis = (start.PlayfieldYAxis[0] * scale, start.PlayfieldYAxis[1] * scale);
+        (double X, double Y) origin = (originValues[0] * scale, originValues[1] * scale);
+        (double X, double Y) xAxis = (xAxisValues[0] * scale, xAxisValues[1] * scale);
+        (double X, double Y) yAxis = (yAxisValues[0] * scale, yAxisValues[1] * scale);
         (double X, double Y) opposite = (xAxis.X + yAxis.X - origin.X, xAxis.Y + yAxis.Y - origin.Y);
         double xDx = xAxis.X - origin.X, xDy = xAxis.Y - origin.Y;
         double yDx = yAxis.X - origin.X, yDy = yAxis.Y - origin.Y;

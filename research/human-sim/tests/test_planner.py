@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import math
 
 import numpy as np
 import pytest
@@ -396,3 +397,108 @@ def test_library_discovery_filters_nonstandard_rulesets(tmp_path):
     asset.write_bytes(b"not a beatmap")
 
     assert discover_standard_beatmaps(tmp_path) == [standard]
+
+
+def _write_long_gap_map(path):
+    value = {
+        "schema_version": 1,
+        "beatmap_sha256": "9" * 64,
+        "beatmap_md5": "a" * 32,
+        "clock_rate": 1.0,
+        "mods": [],
+        "metadata": {"title": "long gap fixture"},
+        "objects": [
+            {
+                "index": 0,
+                "kind": "circle",
+                "effective_start_time_ms": 2000,
+                "effective_end_time_ms": 2000,
+                "position": {"x": 128, "y": 96},
+                "radius": 32,
+            },
+            {
+                "index": 1,
+                "kind": "circle",
+                "effective_start_time_ms": 9000,
+                "effective_end_time_ms": 9000,
+                "position": {"x": 384, "y": 288},
+                "radius": 32,
+            },
+        ],
+    }
+    with gzip.open(path, "wt", encoding="utf-8") as stream:
+        stream.write(json.dumps(value) + "\n")
+
+
+def test_idle_wander_fills_long_gap_smoothly(tmp_path):
+    map_path = tmp_path / "long-gap.ndjson.gz"
+    trace_path = tmp_path / "long-gap.trace.ndjson.gz"
+    _write_long_gap_map(map_path)
+    plan = load_map_plan(map_path)
+    frames = HumanTracePlanner(plan, HumanProfile(50.0, 1234, 500)).generate()
+
+    # Trace-frame times are relative to the 500 ms pre-roll; the second
+    # object's approach starts around trace-time 8100 (absolute ~8600), so the
+    # idle window is safely inside the gap.
+    xs = [frame.x for frame in frames if 2500.0 <= frame.time_us / 1000.0 <= 7800.0]
+    ys = [frame.y for frame in frames if 2500.0 <= frame.time_us / 1000.0 <= 7800.0]
+    assert np.std(xs) > 5.0 or np.std(ys) > 5.0
+
+    # The doodle must stay smooth (no flicks/jerk) in the idle window.
+    max_speed = 0.0
+    previous = None
+    for frame in frames:
+        t = frame.time_us / 1000.0
+        if 2500.0 <= t <= 7800.0:
+            if previous is not None:
+                delta_seconds = (t - previous[0]) / 1000.0
+                if delta_seconds > 0:
+                    distance = math.hypot(frame.x - previous[1], frame.y - previous[2])
+                    max_speed = max(max_speed, distance / delta_seconds)
+            previous = (t, frame.x, frame.y)
+    assert max_speed < 2500.0
+
+    # The wander envelope must converge onto the next target before the
+    # approach: just before the second press (trace-time ~8500, absolute
+    # ~9000) the cursor has to be near the second circle, otherwise a long
+    # doodle could cause a late-arrival miss.
+    late_window = [frame for frame in frames if 8350.0 <= frame.time_us / 1000.0 <= 8450.0]
+    assert late_window
+    target_x, target_y = 384.0, 288.0
+    max_return_distance = max(
+        math.hypot(frame.x - target_x, frame.y - target_y) for frame in late_window
+    )
+    assert max_return_distance < 45.0
+
+    write_trace(
+        trace_path,
+        map_plan=plan,
+        profile_percentile=50.0,
+        seed=1234,
+        sample_rate_hz=500,
+        frames=frames,
+    )
+    assert validate_trace(trace_path)["status"] == "valid"
+
+
+def test_perfect_baseline_does_not_doodle_during_long_gap(tmp_path):
+    map_path = tmp_path / "long-gap.ndjson.gz"
+    _write_long_gap_map(map_path)
+    plan = load_map_plan(map_path)
+    frames = HumanTracePlanner(plan, HumanProfile(99.5, 1234, 500, perfect_baseline=True)).generate()
+
+    # Calibration traces stay exact and deterministic: no idle doodle. With
+    # v2.7 flow motion the cursor glides straight from the first circle to the
+    # second during the gap; assert the path stays on the connecting segment.
+    positions = [
+        (frame.x, frame.y) for frame in frames if 2500.0 <= frame.time_us / 1000.0 <= 7800.0
+    ]
+    assert positions
+    ax, ay = 128.0, 96.0
+    bx, by = 384.0, 288.0
+    seg_dx, seg_dy = bx - ax, by - ay
+    seg_len = math.hypot(seg_dx, seg_dy)
+    for x, y in positions:
+        progress = max(0.0, min(1.0, ((x - ax) * seg_dx + (y - ay) * seg_dy) / (seg_len * seg_len)))
+        perpendicular = math.hypot((x - ax) - progress * seg_dx, (y - ay) - progress * seg_dy)
+        assert perpendicular < 0.01
