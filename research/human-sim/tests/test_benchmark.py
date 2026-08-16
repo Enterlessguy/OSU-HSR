@@ -52,9 +52,12 @@ def test_benchmark_reports_reproducibility_distributions_and_json(tmp_path):
     assert "press_radial" in metrics
     assert "planned_offset_x" in metrics["rows"][0]
     assert "context_distribution" in metrics
+    assert "continuity" in metrics
+    assert "flow_0_45" in metrics["continuity"]
     assert report["monotonicity"]["maps"] == ["benchmark"]
     assert report["monotonicity"]["seeds"] == [42, 43, 44]
     assert "acceleration_px_s2" in metrics["kinematics"]
+    assert "lateral_acceleration_px_s2" in metrics["kinematics"]
     assert metrics["kinematics"]["sampling_rate_hz"] == 500
     assert report["classification"] == "planner-only/not-runtime-validated"
     assert "gates=" in format_summary(report)

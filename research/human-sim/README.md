@@ -44,9 +44,13 @@ executes at high process priority with 1 ms timer resolution and a
 drift-correcting gameplay clock model; the client heartbeats every 50 ms so the
 model stays tight. The cursor is moved at a cadence that matches the effective
 trace rate via absolute `SendInput` moves,
-teleporting any distance in a single event with keys batched alongside. The planner reserves a short settle window before every hit
-so the cursor is already on the target when the OS/game input state catches up;
-this prevents fast-jump head misses. A planner version is folded into the
+teleporting any distance in a single event with keys batched alongside. Ordinary
+circles use a rolling local waypoint horizon and persistent position, velocity,
+acceleration, wander, and coloured-noise state. Quintic Hermite segments share
+interior waypoint derivatives, so shallow flows carry through object boundaries
+while reversals slow naturally. Explicit pre-hit parking is reserved for idle
+or break time, stacked repeats, and slider-specific tracking. A planner version
+is folded into the
 configuration hash so trace caches invalidate automatically when generation
 changes. Supported mods are `HD`, `HR`, `DT`/custom speeds up to 2.00x, `HT`,
 and `FL`, cached separately per clock rate.
@@ -104,6 +108,18 @@ entropy >= 0.60 when at least 32 samples are available. The benchmark's primary
 offsets for correctly matched presses; `press_radial` is retained separately
 to expose cursor/timing contamination. Normal stochastic variation should not
 be handled by tightening these limits.
+
+Continuity diagnostics are stratified by ordinary-circle corner angle and ignore
+explicit idle breaks and slider tracking. Default gates require shallow
+0-45-degree flow to have severe-stop share <= 0.15 and median carry >= 0.50;
+45-120-degree turns must carry less, reversals may approach zero without a
+ restart spike (default carry ratio <= 2.5 in well-sampled reversal windows),
+ tangent-reset excess p95 must stay <= 90 degrees, and the base Hermite path must meet position (1e-4 px), shared
+velocity (1e-5 px/s), and shared acceleration (1e-3 px/s²) tolerances. Cursor
+kinematics are differentiated only after resampling to the configured cadence;
+the five-sample triangular resampling filter is recorded in JSON, and p95
+speed/acceleration/lateral-acceleration/jerk bounds are checked. The raw
+event-frame trace remains available for timing and dispatch analysis.
 
 Skill and effort monotonicity runs cover every selected map and the first three
 benchmark seeds by default. Paired profile changes are aggregated across seeds;

@@ -39,6 +39,18 @@ class BenchmarkGates:
     min_angular_entropy: float = 0.60
     entropy_min_samples: int = 32
     min_successful_landings: int = 1
+    continuity_min_samples: int = 16
+    max_flow_severe_stop_share: float = 0.15
+    min_flow_median_carry_ratio: float = 0.50
+    max_base_boundary_position_error_px: float = 1e-4
+    max_base_shared_velocity_error_px_s: float = 1e-5
+    max_base_shared_acceleration_error_px_s2: float = 1e-3
+    max_reversal_carry_ratio: float = 2.5
+    max_tangent_reset_excess_p95_deg: float = 90.0
+    max_kinematic_speed_px_s: float = 20_000.0
+    max_kinematic_acceleration_p95_px_s2: float = 250_000.0
+    max_kinematic_lateral_acceleration_p95_px_s2: float = 250_000.0
+    max_kinematic_jerk_p95_px_s3: float = 100_000_000.0
 
 
 def _repository_root() -> Path:
@@ -106,6 +118,7 @@ def _kinematic_summary(frames: Sequence[TraceFrame], sample_rate_hz: int = 500) 
             "resampled_frames": 0,
             "velocity_px_s": empty,
             "acceleration_px_s2": empty,
+            "lateral_acceleration_px_s2": empty,
             "jerk_px_s3": empty,
         }
 
@@ -122,6 +135,7 @@ def _kinematic_summary(frames: Sequence[TraceFrame], sample_rate_hz: int = 500) 
             "resampled_frames": 0,
             "velocity_px_s": empty,
             "acceleration_px_s2": empty,
+            "lateral_acceleration_px_s2": empty,
             "jerk_px_s3": empty,
         }
 
@@ -129,15 +143,36 @@ def _kinematic_summary(frames: Sequence[TraceFrame], sample_rate_hz: int = 500) 
     uniform_positions = np.column_stack(
         [np.interp(uniform_times, times, positions[:, axis]) for axis in range(positions.shape[1])]
     )
+    # Event frames are retained in the trace for exact key/cursor dispatch,
+    # but a single off-grid event must not become a multi-million px/s²
+    # derivative.  A short triangular physical resampling kernel represents
+    # the configured cursor cadence while preserving the underlying path.
+    filter_width = 5 if len(uniform_positions) >= 5 else 1
+    if filter_width > 1:
+        kernel = np.array([1.0, 2.0, 3.0, 2.0, 1.0], dtype=float) / 9.0
+        padded = np.pad(uniform_positions, ((filter_width // 2, filter_width // 2), (0, 0)), mode="edge")
+        uniform_positions = np.column_stack(
+            [np.convolve(padded[:, axis], kernel, mode="valid") for axis in range(positions.shape[1])]
+        )
     velocity = np.diff(uniform_positions, axis=0) / step_s
     acceleration = np.diff(velocity, axis=0) / step_s if len(velocity) >= 2 else np.empty((0, 2))
+    lateral_acceleration = np.empty(0)
+    if len(acceleration) and len(velocity) >= len(acceleration):
+        speed = np.linalg.norm(velocity[: len(acceleration)], axis=1)
+        cross_product = np.abs(
+            velocity[: len(acceleration), 0] * acceleration[:, 1]
+            - velocity[: len(acceleration), 1] * acceleration[:, 0]
+        )
+        lateral_acceleration = cross_product / np.maximum(speed, 1.0)
     jerk = np.diff(acceleration, axis=0) / step_s if len(acceleration) >= 2 else np.empty((0, 2))
     return {
         "sampling_rate_hz": sample_rate_hz,
         "source_frames": len(frames),
         "resampled_frames": len(uniform_times),
+        "resampling_filter": "triangular-5-sample" if filter_width > 1 else "none",
         "velocity_px_s": _summary(np.linalg.norm(velocity, axis=1)),
         "acceleration_px_s2": _summary(np.linalg.norm(acceleration, axis=1)),
+        "lateral_acceleration_px_s2": _summary(lateral_acceleration),
         "jerk_px_s3": _summary(np.linalg.norm(jerk, axis=1)),
     }
 
@@ -150,6 +185,120 @@ def _normalized_entropy(angles: Sequence[float], bins: int = 16) -> float:
     probabilities = histogram[histogram > 0] / float(len(values))
     entropy = -float(np.sum(probabilities * np.log(probabilities)))
     return float(entropy / math.log(bins))
+
+
+def _trace_continuity_summary(
+    frames: Sequence[TraceFrame],
+    planner: HumanTracePlanner,
+    timeline_start_ms: float,
+) -> dict[str, Any]:
+    """Measure carried speed at planned circle boundaries from the trace.
+
+    This deliberately samples a fixed millisecond neighbourhood around each
+    event instead of differentiating exact event-frame intervals.  It catches
+    planner-generated stalls while remaining insensitive to the later cursor
+    cadence used by the runtime dispatcher.
+    """
+    if len(frames) < 4:
+        return {"source": "trace-fixed-window", "flow_0_45": {"samples": 0}, "turn_45_120": {"samples": 0}, "reversal_gt_120": {"samples": 0}, "tangent_reset_excess_deg": 0.0, "tangent_reset_excess_p95_deg": 0.0}
+    frame_times = np.asarray([timeline_start_ms + frame.time_us / 1000.0 for frame in frames], dtype=float)
+    positions = np.asarray([[frame.x, frame.y] for frame in frames], dtype=float)
+    ordered = np.concatenate(([True], np.diff(frame_times) > 0.0))
+    frame_times = frame_times[ordered]
+    positions = positions[ordered]
+
+    def position_at(time_ms: float) -> np.ndarray:
+        return np.array(
+            [
+                np.interp(time_ms, frame_times, positions[:, axis])
+                for axis in range(positions.shape[1])
+            ],
+            dtype=float,
+        )
+
+    def speed_at(time_ms: float, half_window_ms: float) -> float:
+        left = position_at(time_ms - half_window_ms)
+        right = position_at(time_ms + half_window_ms)
+        return float(np.linalg.norm(right - left) / max(2.0 * half_window_ms / 1000.0, 1e-6))
+
+    groups: dict[str, list[float]] = {"flow_0_45": [], "turn_45_120": [], "reversal_gt_120": []}
+    tangent_excess: list[float] = []
+    segment_indices = {
+        int(segment["object_index"])
+        for segment in planner.motion_segments
+        if bool(segment.get("realized", True)) and bool(segment.get("target_reached", True))
+    }
+    segment_by_index = {
+        int(segment["object_index"]): segment
+        for segment in planner.motion_segments
+        if bool(segment.get("realized", True))
+    }
+    for segment in planner.motion_segments:
+        if (
+            not bool(segment.get("realized", True))
+            or not bool(segment.get("target_reached", True))
+            or bool(segment.get("break_before", False))
+        ):
+            continue
+        object_index = int(segment["object_index"])
+        if object_index - 1 not in segment_indices or object_index + 1 not in segment_indices:
+            continue
+        angle = float(segment["corner_angle_deg"])
+        hit_time = float(segment["end_time_ms"])
+        if hit_time - frame_times[0] < 10.0 or hit_time + 10.0 > frame_times[-1]:
+            continue
+        local_window = max(2.0, min(8.0, 1000.0 / planner.profile.sample_rate_hz * 2.0))
+        previous_gap = hit_time - float(segment_by_index[object_index - 1]["end_time_ms"])
+        following_gap = float(segment_by_index[object_index + 1]["end_time_ms"]) - hit_time
+        # Timing overlaps and stacked repeats do not provide a meaningful
+        # before/after movement window; retain them in the object/timing
+        # diagnostics but exclude them from continuity calibration.
+        if min(previous_gap, following_gap) < max(3.0 * local_window, 12.0):
+            continue
+        boundary_speed = speed_at(hit_time, local_window)
+        surrounding = [
+            speed_at(hit_time - 4.0 * local_window, local_window),
+            speed_at(hit_time + 4.0 * local_window, local_window),
+        ]
+        # Do not turn a near-idle neighbourhood into an artificial 10x
+        # restart ratio.  250 px/s is below the profile's ordinary movement
+        # envelope but above interpolation noise and deliberate idle drift.
+        reference_speed = max(float(np.median(surrounding)), 250.0)
+        carry = float(boundary_speed / reference_speed)
+        if angle <= 45.0:
+            groups["flow_0_45"].append(carry)
+        elif angle <= 120.0:
+            groups["turn_45_120"].append(carry)
+        else:
+            groups["reversal_gt_120"].append(carry)
+        incoming = position_at(hit_time) - position_at(hit_time - 2.0 * local_window)
+        outgoing = position_at(hit_time + 2.0 * local_window) - position_at(hit_time)
+        if min(float(np.linalg.norm(incoming)), float(np.linalg.norm(outgoing))) < 1.5:
+            continue
+        incoming_unit = incoming / max(float(np.linalg.norm(incoming)), 1e-9)
+        outgoing_unit = outgoing / max(float(np.linalg.norm(outgoing)), 1e-9)
+        actual_turn = math.degrees(math.acos(float(np.clip(np.dot(incoming_unit, outgoing_unit), -1.0, 1.0))))
+        tangent_excess.append(max(0.0, actual_turn - angle))
+
+    def summarize(values: list[float]) -> dict[str, Any]:
+        array = np.asarray(values, dtype=float)
+        array = array[np.isfinite(array)]
+        return {
+            "samples": int(len(array)),
+            "severe_stop_share": round(float(np.mean(array < 0.2)), 6) if len(array) else None,
+            "median_carry_ratio": round(float(np.median(array)), 6) if len(array) else None,
+            "p95_carry_ratio": round(float(np.percentile(array, 95)), 6) if len(array) else None,
+            "max_carry_ratio": round(float(np.max(array)), 6) if len(array) else None,
+        }
+
+    return {
+        "source": "trace-fixed-window",
+        "flow_0_45": summarize(groups["flow_0_45"]),
+        "turn_45_120": summarize(groups["turn_45_120"]),
+        "reversal_gt_120": summarize(groups["reversal_gt_120"]),
+        "tangent_reset_excess_deg": round(float(max(tangent_excess, default=0.0)), 6),
+        "tangent_reset_excess_p95_deg": round(float(np.percentile(tangent_excess, 95)), 6) if tangent_excess else 0.0,
+    }
 
 
 def _correlation(left: Sequence[float], right: Sequence[float]) -> float | None:
@@ -240,6 +389,10 @@ def _run_metrics(
             value = _correlation(radial_array[:-lag], radial_array[lag:])
             if value is not None:
                 lag_correlations[str(lag)] = round(abs(value), 6)
+    continuity = planner.continuity_stats if planner is not None else None
+    if planner is not None:
+        continuity = dict(continuity)
+        continuity["trace"] = _trace_continuity_summary(frames, planner, timeline_start)
     return {
         "objects": len(plan.objects),
         "judged_objects": judged_objects,
@@ -270,6 +423,7 @@ def _run_metrics(
             "samples": int(len(timing_array)),
         },
         "context_distribution": {"counts": context_counts, "shares": context_shares},
+        "continuity": continuity,
         "kinematics": _kinematic_summary(
             frames,
             sample_rate_hz=planner.profile.sample_rate_hz if planner is not None else 500,
@@ -331,6 +485,19 @@ def _aggregate_run_metrics(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
         for record in records
         for value in record["metrics"]["lag_abs_correlation"].values()
     ]
+    kinematic_values = [record["metrics"]["kinematics"] for record in records]
+    continuity_values = [record["metrics"].get("continuity") for record in records]
+    continuity_values = [value for value in continuity_values if value is not None]
+    trace_values = [value.get("trace") for value in continuity_values if value.get("trace") is not None]
+    base_flow_values = [value["flow_0_45"] for value in continuity_values]
+    base_turn_values = [value["turn_45_120"] for value in continuity_values]
+    base_reversal_values = [value["reversal_gt_120"] for value in continuity_values]
+    flow_values = [value["flow_0_45"] for value in trace_values] or base_flow_values
+    turn_values = [value["turn_45_120"] for value in trace_values] or base_turn_values
+    reversal_values = [value["reversal_gt_120"] for value in trace_values] or base_reversal_values
+    flow_carries = [float(value["median_carry_ratio"]) for value in flow_values if value["median_carry_ratio"] is not None]
+    flow_stops = [float(value["severe_stop_share"]) for value in flow_values if value["severe_stop_share"] is not None]
+    turn_carries = [float(value["median_carry_ratio"]) for value in turn_values if value["median_carry_ratio"] is not None]
     return {
         "runs": len(records),
         "radial_mean": _summary(radial),
@@ -342,6 +509,60 @@ def _aggregate_run_metrics(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "success_rate": _summary(success),
         "lag_abs_correlation_max": round(float(max(lag_values)), 6) if lag_values else 0.0,
         "successful_landings_total": int(sum(record["metrics"]["successful_landings"] for record in records)),
+        "kinematics": {
+            "max_speed_px_s": max((float(value["velocity_px_s"]["max"]) for value in kinematic_values), default=0.0),
+            "max_acceleration_p95_px_s2": max((float(value["acceleration_px_s2"]["p95"]) for value in kinematic_values), default=0.0),
+            "max_lateral_acceleration_p95_px_s2": max((float(value["lateral_acceleration_px_s2"]["p95"]) for value in kinematic_values), default=0.0),
+            "max_jerk_p95_px_s3": max((float(value["jerk_px_s3"]["p95"]) for value in kinematic_values), default=0.0),
+        },
+        "continuity": {
+            "runs": len(continuity_values),
+            "flow_samples": int(sum(value["samples"] for value in flow_values)),
+            "flow_severe_stop_share": _summary(flow_stops),
+            "flow_median_carry_ratio": _summary(flow_carries),
+            "turn_median_carry_ratio": _summary(turn_carries),
+            "reversal_max_carry_ratio": max(
+                (float(value["max_carry_ratio"]) for value in reversal_values if value["max_carry_ratio"] is not None),
+                default=0.0,
+            ),
+            "base_boundary_position_error_px": max(
+                (float(value["base_boundary_position_error_px"]) for value in continuity_values),
+                default=0.0,
+            ),
+            "base_shared_position_error_px": max(
+                (float(value["base_shared_position_error_px"]) for value in continuity_values),
+                default=0.0,
+            ),
+            "base_shared_velocity_error_px_s": max(
+                (float(value["base_shared_velocity_error_px_s"]) for value in continuity_values),
+                default=0.0,
+            ),
+            "base_shared_acceleration_error_px_s2": max(
+                (float(value["base_shared_acceleration_error_px_s2"]) for value in continuity_values),
+                default=0.0,
+            ),
+            "tangent_reset_excess_deg": max(
+                (float(value.get("trace", value)["tangent_reset_excess_deg"]) for value in continuity_values),
+                default=0.0,
+            ),
+            "tangent_reset_excess_p95_deg": max(
+                (float(value.get("trace", value).get("tangent_reset_excess_p95_deg", 0.0)) for value in continuity_values),
+                default=0.0,
+            ),
+            "base_flow_median_carry_ratio": _summary(
+                [float(value["median_carry_ratio"]) for value in base_flow_values if value["median_carry_ratio"] is not None]
+            ),
+            "trace": {
+                "runs": len(trace_values),
+                "flow_samples": int(sum(value["flow_0_45"]["samples"] for value in trace_values)),
+                "flow_severe_stop_share": _summary(
+                    [float(value["flow_0_45"]["severe_stop_share"]) for value in trace_values if value["flow_0_45"].get("severe_stop_share") is not None]
+                ),
+                "flow_median_carry_ratio": _summary(
+                    [float(value["flow_0_45"]["median_carry_ratio"]) for value in trace_values if value["flow_0_45"].get("median_carry_ratio") is not None]
+                ),
+            },
+        },
     }
 
 
@@ -484,6 +705,122 @@ def _gate_report(
     )
     total_success = sum(report["aggregate"]["successful_landings_total"] for report in map_reports)
     add("successful_landings", total_success >= gates.min_successful_landings, total_success, gates.min_successful_landings, "benchmark must produce at least one judged landing")
+    kinematic_aggregates = [report["aggregate"].get("kinematics", {}) for report in map_reports]
+    max_speed = max((float(value.get("max_speed_px_s", 0.0)) for value in kinematic_aggregates), default=0.0)
+    max_acceleration_p95 = max(
+        (float(value.get("max_acceleration_p95_px_s2", 0.0)) for value in kinematic_aggregates),
+        default=0.0,
+    )
+    max_lateral_acceleration_p95 = max(
+        (float(value.get("max_lateral_acceleration_p95_px_s2", 0.0)) for value in kinematic_aggregates),
+        default=0.0,
+    )
+    max_jerk_p95 = max((float(value.get("max_jerk_p95_px_s3", 0.0)) for value in kinematic_aggregates), default=0.0)
+    add("kinematic_speed_bound", max_speed <= gates.max_kinematic_speed_px_s, round(max_speed, 6), gates.max_kinematic_speed_px_s, "uniform-cadence trace speed bound")
+    add("kinematic_acceleration_bound", max_acceleration_p95 <= gates.max_kinematic_acceleration_p95_px_s2, round(max_acceleration_p95, 6), gates.max_kinematic_acceleration_p95_px_s2, "uniform-cadence acceleration p95 bound")
+    add("kinematic_lateral_acceleration_bound", max_lateral_acceleration_p95 <= gates.max_kinematic_lateral_acceleration_p95_px_s2, round(max_lateral_acceleration_p95, 6), gates.max_kinematic_lateral_acceleration_p95_px_s2, "uniform-cadence lateral acceleration p95 bound")
+    add("kinematic_jerk_bound", max_jerk_p95 <= gates.max_kinematic_jerk_p95_px_s3, round(max_jerk_p95, 6), gates.max_kinematic_jerk_p95_px_s3, "uniform-cadence jerk p95 bound")
+    continuity_reports = [report["aggregate"].get("continuity", {}) for report in map_reports]
+    flow_reports = [
+        report
+        for report in continuity_reports
+        if int(report.get("flow_samples", 0)) >= gates.continuity_min_samples
+    ]
+    flow_stop_max = max(
+        (float(report["flow_severe_stop_share"]["max"]) for report in flow_reports),
+        default=0.0,
+    )
+    flow_carry_min = min(
+        (float(report["flow_median_carry_ratio"]["min"]) for report in flow_reports),
+        default=None,
+    )
+    turn_carry_values = [
+        float(report["turn_median_carry_ratio"]["mean"])
+        for report in continuity_reports
+        if report.get("turn_median_carry_ratio", {}).get("n", 0) > 0
+    ]
+    reversal_max = max(
+        (float(report.get("reversal_max_carry_ratio", 0.0)) for report in continuity_reports),
+        default=0.0,
+    )
+    add(
+        "flow_severe_stop_share",
+        not flow_reports or flow_stop_max <= gates.max_flow_severe_stop_share,
+        round(flow_stop_max, 6),
+        gates.max_flow_severe_stop_share,
+        f"checked only when a map has at least {gates.continuity_min_samples} shallow-flow waypoints",
+    )
+    add(
+        "flow_median_carry_ratio",
+        not flow_reports or (flow_carry_min is not None and flow_carry_min >= gates.min_flow_median_carry_ratio),
+        None if flow_carry_min is None else round(flow_carry_min, 6),
+        gates.min_flow_median_carry_ratio,
+        "ordinary 0-45 degree flow must retain substantial endpoint speed",
+    )
+    turn_below_flow = all(
+        float(report["turn_median_carry_ratio"]["mean"]) < float(report["flow_median_carry_ratio"]["mean"])
+        for report in continuity_reports
+        if report.get("flow_median_carry_ratio", {}).get("n", 0) > 0
+        and report.get("turn_median_carry_ratio", {}).get("n", 0) > 0
+    )
+    add(
+        "turn_carry_below_flow",
+        turn_below_flow,
+        turn_carry_values,
+        "45-120 degree median carry must be below shallow flow",
+        "geometry-derived carry should decrease with turn angle",
+    )
+    add(
+        "reversal_restart_spike",
+        reversal_max <= gates.max_reversal_carry_ratio,
+        round(reversal_max, 6),
+        gates.max_reversal_carry_ratio,
+        "near-reversal knots may slow down but must not create a restart-speed spike",
+    )
+    tangent_reset_p95_max = max(
+        (float(report.get("tangent_reset_excess_p95_deg", 0.0)) for report in continuity_reports),
+        default=0.0,
+    )
+    add(
+        "tangent_reset_excess",
+        tangent_reset_p95_max <= gates.max_tangent_reset_excess_p95_deg,
+        round(tangent_reset_p95_max, 6),
+        gates.max_tangent_reset_excess_p95_deg,
+        "the p95 trace tangent change should not greatly exceed map corner geometry",
+    )
+    base_position_max = max(
+        (float(report.get("base_boundary_position_error_px", 0.0)) for report in continuity_reports),
+        default=0.0,
+    )
+    base_velocity_max = max(
+        (float(report.get("base_shared_velocity_error_px_s", 0.0)) for report in continuity_reports),
+        default=0.0,
+    )
+    base_acceleration_max = max(
+        (float(report.get("base_shared_acceleration_error_px_s2", 0.0)) for report in continuity_reports),
+        default=0.0,
+    )
+    add(
+        "base_boundary_position_continuity",
+        base_position_max <= gates.max_base_boundary_position_error_px,
+        round(base_position_max, 9),
+        gates.max_base_boundary_position_error_px,
+        "quintic base path must arrive at every ordinary waypoint",
+    )
+    add(
+        "base_velocity_continuity",
+        base_velocity_max <= gates.max_base_shared_velocity_error_px_s,
+        round(base_velocity_max, 9),
+        gates.max_base_shared_velocity_error_px_s,
+        "adjacent segments share the exact waypoint velocity",
+    )
+    add(
+        "base_acceleration_continuity",
+        base_acceleration_max <= gates.max_base_shared_acceleration_error_px_s2,
+        round(base_acceleration_max, 9),
+        gates.max_base_shared_acceleration_error_px_s2,
+        "adjacent segments share the exact waypoint acceleration",
+    )
     add(
         "skill_monotonicity",
         profile_report["skill"]["pass"],
@@ -630,6 +967,14 @@ def format_summary(report: dict[str, Any]) -> str:
         aggregate = map_report["aggregate"]
         cross = map_report["cross_seed"]["absolute_correlation"]
         cross_value = f"{cross['max']:.3f}" if map_report["cross_seed"]["checked"] else "n/a"
+        continuity = aggregate.get("continuity", {})
+        flow_carry = continuity.get("flow_median_carry_ratio", {}).get("mean")
+        flow_stop = continuity.get("flow_severe_stop_share", {}).get("mean")
+        continuity_text = (
+            f" flow_carry={flow_carry:.3f} flow_stop={flow_stop:.3f}"
+            if flow_carry is not None and flow_stop is not None
+            else ""
+        )
         lines.append(
             f"{map_report['map']}: success={aggregate['success_rate']['mean']:.3f} "
             f"radial_mean={aggregate['radial_mean']['mean']:.3f} "
@@ -637,7 +982,7 @@ def format_summary(report: dict[str, Any]) -> str:
             f"entropy={aggregate['angular_entropy']['mean']:.3f} "
             f"jump_share={aggregate['context_jump_share']['mean']:.3f} "
             f"timing_p95={aggregate['timing_p95_abs_ms']['mean']:.2f}ms "
-            f"cross_seed_abs_corr_max={cross_value}"
+            f"cross_seed_abs_corr_max={cross_value}{continuity_text}"
         )
     lines.append(f"skill-monotonicity={'PASS' if report['monotonicity']['skill']['pass'] else 'FAIL'} effort-monotonicity={'PASS' if report['monotonicity']['effort']['pass'] else 'FAIL'}")
     lines.append(f"gates={'PASS' if report['gates']['pass'] else 'FAIL'}")

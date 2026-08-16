@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 
 import numpy as np
@@ -11,7 +11,7 @@ from .schemas import HumanProfile, MapObject, MapPlan, TraceFrame
 
 # Bump when trace-generation behaviour changes so the runner's content-addressed
 # trace cache is invalidated (the configuration hash includes this string).
-PLANNER_VERSION = "timing-sync-v2.11"
+PLANNER_VERSION = "timing-sync-v2.12"
 
 
 @dataclass(frozen=True)
@@ -24,6 +24,27 @@ class SkillParameters:
     hold_mean_ms: float
     hold_sigma_ms: float
     fatigue_gain: float
+
+
+@dataclass
+class MotionState:
+    """Persistent cursor state shared by adjacent movement primitives.
+
+    The planner still makes local, object-conditioned decisions, but position,
+    velocity, acceleration, coloured noise, and wander are not reinitialised
+    at every target.  Arrays are deliberately mutable: the state is advanced
+    once per emitted sample rather than once per object.
+    """
+
+    position: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=float))
+    velocity: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=float))
+    acceleration: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=float))
+    noise_velocity: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=float))
+    ou_offset: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=float))
+    wander: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=float))
+    correction: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=float))
+    refractory_until_ms: float = float("-inf")
+    last_timestamp_ms: float = float("-inf")
 
 
 PRESETS: dict[float, SkillParameters] = {
@@ -165,23 +186,48 @@ def _normalised(vector: np.ndarray) -> np.ndarray:
     return vector / length if length > 1e-9 else np.zeros(2)
 
 
-def _ou_bridge(
-    rng: np.random.Generator,
-    count: int,
-    sigma: float,
-    correlation_ms: float,
-    step_ms: float,
-) -> np.ndarray:
-    """Generate correlated residuals pinned to zero at both boundaries."""
-    if count <= 1 or sigma <= 0:
-        return np.zeros(count)
-    rho = math.exp(-step_ms / max(correlation_ms, step_ms))
-    values = np.zeros(count)
-    innovation = sigma * math.sqrt(max(1e-9, 1 - rho * rho))
-    for index in range(1, count):
-        values[index] = rho * values[index - 1] + rng.normal(0, innovation)
-    values -= np.linspace(values[0], values[-1], count)
-    return values
+def _quintic_hermite(
+    p0: np.ndarray,
+    v0: np.ndarray,
+    a0: np.ndarray,
+    p1: np.ndarray,
+    v1: np.ndarray,
+    a1: np.ndarray,
+    duration_ms: float,
+    u: np.ndarray | float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Evaluate a quintic Hermite segment and its physical derivatives.
+
+    ``v`` and ``a`` use px/s and px/s²; ``u`` is the normalised segment time.
+    The endpoint equations are the C² boundary conditions used by the rolling
+    waypoint planner.  Returning derivatives here keeps the solver and its
+    continuity tests on the same implementation.
+    """
+    duration_s = max(float(duration_ms) / 1000.0, 1e-6)
+    p0 = np.asarray(p0, dtype=float)
+    v0 = np.asarray(v0, dtype=float)
+    a0 = np.asarray(a0, dtype=float)
+    p1 = np.asarray(p1, dtype=float)
+    v1 = np.asarray(v1, dtype=float)
+    a1 = np.asarray(a1, dtype=float)
+    tau = np.asarray(u, dtype=float)
+    c0 = p0
+    c1 = duration_s * v0
+    c2 = (duration_s * duration_s * a0) / 2.0
+    residual_position = p1 - c0 - c1 - c2
+    residual_velocity = duration_s * v1 - c1 - 2.0 * c2
+    residual_acceleration = duration_s * duration_s * a1 - 2.0 * c2
+    c3 = 10.0 * residual_position - 4.0 * residual_velocity + 0.5 * residual_acceleration
+    c4 = -15.0 * residual_position + 7.0 * residual_velocity - residual_acceleration
+    c5 = 6.0 * residual_position - 3.0 * residual_velocity + 0.5 * residual_acceleration
+    position = c0 + c1 * tau[..., None] + c2 * tau[..., None] ** 2 + c3 * tau[..., None] ** 3 + c4 * tau[..., None] ** 4 + c5 * tau[..., None] ** 5
+    d_tau = c1 + 2.0 * c2 * tau[..., None] + 3.0 * c3 * tau[..., None] ** 2 + 4.0 * c4 * tau[..., None] ** 3 + 5.0 * c5 * tau[..., None] ** 4
+    d2_tau = 2.0 * c2 + 6.0 * c3 * tau[..., None] + 12.0 * c4 * tau[..., None] ** 2 + 20.0 * c5 * tau[..., None] ** 3
+    velocity = d_tau / duration_s
+    acceleration = d2_tau / (duration_s * duration_s)
+    if tau.ndim == 0:
+        return position[0] if position.ndim > 1 else position, velocity[0] if velocity.ndim > 1 else velocity, acceleration[0] if acceleration.ndim > 1 else acceleration
+    return position, velocity, acceleration
 
 
 class HumanTracePlanner:
@@ -206,6 +252,16 @@ class HumanTracePlanner:
         # path instead of resetting into independent squiggles.
         self.wander = np.zeros(2)
         self.curve_state = 0.0
+        self.motion_state = MotionState()
+        self.motion_segments: list[dict[str, object]] = []
+        self.motion_waypoint_windows: list[dict[str, object]] = []
+        self._continuous_endpoint_emitted = False
+        self._transition_after_idle = False
+        self._last_waypoint_position: np.ndarray | None = None
+        self._last_waypoint_time_ms: float | None = None
+        self._last_waypoint_velocity = np.zeros(2)
+        self._last_waypoint_acceleration = np.zeros(2)
+        self.motion_correction_events = 0
         self.fatigue = profile.fatigue_initial
         # Phase-2 (v2.1) shared aim/timing state: one pressure signal and one
         # short stress-episode signal drive both systems, so a hard pattern
@@ -294,6 +350,215 @@ class HumanTracePlanner:
             0.0, math.sqrt(max(1e-9, 1.0 - curve_rho * curve_rho))
         )
 
+    def _reset_motion_state(self, timestamp_ms: float, position: np.ndarray) -> None:
+        self.motion_state = MotionState(
+            position=np.asarray(position, dtype=float).copy(),
+            last_timestamp_ms=float(timestamp_ms),
+        )
+        self.wander = self.motion_state.wander.copy()
+        self.motion_segments = []
+        self.motion_waypoint_windows = []
+        self._continuous_endpoint_emitted = False
+        self._transition_after_idle = False
+        self._last_waypoint_position = None
+        self._last_waypoint_time_ms = None
+        self._last_waypoint_velocity = np.zeros(2)
+        self._last_waypoint_acceleration = np.zeros(2)
+        self.motion_correction_events = 0
+
+    def _sync_motion_state_from_points(self, points: list[tuple[float, np.ndarray]]) -> None:
+        """Adopt the tail of a slider/idle/legacy path without resetting noise."""
+        if not points:
+            return
+        time_ms, position = points[-1]
+        state = self.motion_state
+        previous_velocity = state.velocity.copy()
+        state.position = np.asarray(position, dtype=float).copy()
+        if len(points) >= 2:
+            previous_time, previous_position = points[-2]
+            dt_s = max((float(time_ms) - float(previous_time)) / 1000.0, 1e-6)
+            state.velocity = (np.asarray(position, dtype=float) - np.asarray(previous_position, dtype=float)) / dt_s
+            if np.all(np.isfinite(state.velocity)):
+                state.acceleration = (state.velocity - previous_velocity) / dt_s
+        state.last_timestamp_ms = float(time_ms)
+        self.wander = state.wander.copy()
+        self._last_waypoint_position = state.position.copy()
+        self._last_waypoint_time_ms = state.last_timestamp_ms
+        self._last_waypoint_velocity = state.velocity.copy()
+        self._last_waypoint_acceleration = state.acceleration.copy()
+
+    def _future_waypoint_window(
+        self,
+        object_index: int,
+        target: np.ndarray,
+        hit_time: float,
+    ) -> list[tuple[np.ndarray, float]]:
+        """Build a small local horizon, using sampled offsets when available."""
+        window: list[tuple[np.ndarray, float]] = [(np.asarray(target, dtype=float).copy(), float(hit_time))]
+        for future_index in range(object_index + 1, min(len(self.map.objects), object_index + 6)):
+            obj = self.map.objects[future_index]
+            if obj.kind == "spinner":
+                continue
+            offset = self.landing_offsets.get(future_index)
+            future = np.array([obj.position.x, obj.position.y], dtype=float)
+            if offset is not None:
+                future += np.asarray(offset, dtype=float)
+            window.append((future, float(obj.start_time_ms)))
+        self.motion_waypoint_windows.append(
+            {
+                "object_index": object_index,
+                "points": [point.tolist() for point, _time in window],
+                "times_ms": [time for _point, time in window],
+            }
+        )
+        return window
+
+    def _waypoint_velocity(
+        self,
+        previous: np.ndarray,
+        current: np.ndarray,
+        following: np.ndarray,
+        previous_time_ms: float,
+        current_time_ms: float,
+        following_time_ms: float,
+    ) -> tuple[np.ndarray, float, float]:
+        """Estimate a geometry-derived velocity at one interior waypoint."""
+        d_in = np.asarray(current, dtype=float) - np.asarray(previous, dtype=float)
+        d_out = np.asarray(following, dtype=float) - np.asarray(current, dtype=float)
+        length_in = float(np.linalg.norm(d_in))
+        length_out = float(np.linalg.norm(d_out))
+        u_in = _normalised(d_in)
+        u_out = _normalised(d_out)
+        dot = float(np.clip(np.dot(u_in, u_out), -1.0, 1.0))
+        theta = math.acos(dot)
+        bisector = _normalised(u_in + u_out)
+        in_seconds = max((current_time_ms - previous_time_ms) / 1000.0, 1e-3)
+        out_seconds = max((following_time_ms - current_time_ms) / 1000.0, 1e-3)
+        speed_in = length_in / in_seconds
+        speed_out = length_out / out_seconds
+        harmonic = 2.0 * speed_in * speed_out / max(speed_in + speed_out, 1e-6)
+        nominal = min(harmonic, self._speed_ceiling(max(length_in, length_out)))
+        carry = math.cos(theta * 0.5) ** 2
+        velocity = bisector * nominal * carry
+
+        # A curvature-aware lateral acceleration cap keeps shallow bends
+        # flowing while naturally slowing a tight turn or reversal.
+        mean_length = max(0.5 * (length_in + length_out), 1.0)
+        kappa = theta / mean_length
+        lateral_limit = max(28_000.0, self._speed_ceiling(mean_length) * 8.0)
+        if kappa > 1e-6:
+            velocity_length = min(float(np.linalg.norm(velocity)), math.sqrt(lateral_limit / kappa))
+            velocity = bisector * velocity_length
+        return velocity, theta, kappa
+
+    def _waypoint_kinematics(
+        self,
+        object_index: int,
+        target: np.ndarray,
+        hit_time: float,
+        available_from: float,
+    ) -> tuple[np.ndarray, np.ndarray, float, list[tuple[np.ndarray, float]]]:
+        window = self._future_waypoint_window(object_index, target, hit_time)
+        previous = (
+            self._last_waypoint_position.copy()
+            if self._last_waypoint_position is not None
+            else self.motion_state.position.copy()
+        )
+        previous_time = (
+            self._last_waypoint_time_ms
+            if self._last_waypoint_time_ms is not None
+            else float(available_from)
+        )
+        current, current_time = window[0]
+        if len(window) > 1:
+            following, following_time = window[1]
+        else:
+            following = current.copy()
+            following_time = current_time + max(self.step_ms, current_time - previous_time)
+        endpoint_velocity, _theta, _kappa = self._waypoint_velocity(
+            previous, current, following, previous_time, current_time, following_time
+        )
+
+        previous_velocity = self._last_waypoint_velocity.copy()
+        if self._last_waypoint_position is None:
+            previous_velocity = self.motion_state.velocity.copy()
+        if len(window) > 2:
+            next_velocity, _next_theta, _next_kappa = self._waypoint_velocity(
+                current,
+                following,
+                window[2][0],
+                current_time,
+                following_time,
+                window[2][1],
+            )
+        else:
+            next_velocity = endpoint_velocity.copy()
+        span_seconds = max((following_time - previous_time) / 1000.0, 1e-3)
+        endpoint_acceleration = (next_velocity - previous_velocity) / span_seconds
+        acceleration_limit = max(22_000.0, self._speed_ceiling(max(np.linalg.norm(current - previous), 1.0)) * 12.0)
+        acceleration_length = float(np.linalg.norm(endpoint_acceleration))
+        if acceleration_length > acceleration_limit:
+            endpoint_acceleration *= acceleration_limit / acceleration_length
+        return endpoint_velocity, endpoint_acceleration, _theta, window
+
+    def _advance_motion_state_sample(
+        self,
+        time_ms: float,
+        base_position: np.ndarray,
+        base_velocity: np.ndarray,
+        base_acceleration: np.ndarray,
+        tangent: np.ndarray,
+        strain: float,
+        initial_wander: np.ndarray,
+        initial_noise: np.ndarray,
+    ) -> np.ndarray:
+        """Advance persistent coloured noise/wander once for one path sample."""
+        state = self.motion_state
+        dt_ms = max(0.001, float(time_ms) - state.last_timestamp_ms)
+        dt_s = dt_ms / 1000.0
+        noise_tau = 180.0 + 180.0 * (1.0 - float(np.clip(strain, 0.0, 1.0)))
+        rho = math.exp(-dt_ms / noise_tau)
+        sigma = self.params.aim_sigma * (0.025 + 0.055 * strain) * (0.9 + 0.25 * (1.0 - self.effort))
+        old_noise = state.ou_offset.copy()
+        state.ou_offset = rho * state.ou_offset + self.rng.normal(
+            0.0, sigma * math.sqrt(max(1e-9, 1.0 - rho * rho)), 2
+        )
+        state.noise_velocity = (state.ou_offset - old_noise) / dt_s
+
+        wander_tau = 650.0
+        wander_rho = math.exp(-dt_ms / wander_tau)
+        wander_sigma = self.aim_sigma_base * (0.10 + 0.08 * (1.0 - self.effort))
+        state.wander = wander_rho * state.wander + self.rng.normal(
+            0.0, wander_sigma * math.sqrt(max(1e-9, 1.0 - wander_rho * wander_rho)), 2
+        )
+        self.wander = state.wander.copy()
+
+        tangent = _normalised(tangent)
+        normal = np.array([-tangent[1], tangent[0]])
+        normal_noise = float(np.dot(state.ou_offset, normal)) * normal
+        tangent_noise = float(np.dot(state.ou_offset, tangent)) * tangent * 0.25
+        applied_noise = normal_noise + tangent_noise
+        state.last_timestamp_ms = float(time_ms)
+        state.velocity = np.asarray(base_velocity, dtype=float) + state.noise_velocity
+        state.acceleration = np.asarray(base_acceleration, dtype=float)
+        state.position = np.asarray(base_position, dtype=float) + (state.wander - initial_wander) + (applied_noise - initial_noise)
+        return state.position.copy()
+
+    def _persistent_noise_series(self, count: int, sigma: float, correlation_ms: float) -> np.ndarray:
+        """Advance the shared OU offset for legacy slider/spinner samples."""
+        if self.profile.perfect_baseline or count <= 0 or sigma <= 0.0:
+            return np.zeros(max(0, count))
+        state = self.motion_state
+        values = np.zeros(count)
+        rho = math.exp(-self.step_ms / max(correlation_ms, self.step_ms))
+        innovation = sigma * math.sqrt(max(1e-9, 1.0 - rho * rho))
+        for index in range(count):
+            old_offset = state.ou_offset.copy()
+            state.ou_offset = rho * state.ou_offset + self.rng.normal(0.0, innovation, 2)
+            state.noise_velocity = (state.ou_offset - old_offset) / max(self.step_ms / 1000.0, 1e-6)
+            values[index] = float(state.ou_offset[0])
+        return values
+
     def generate(self) -> list[TraceFrame]:
         first_time = self.map.objects[0].start_time_ms
         # Gameplay itself starts before beatmap time zero (osu!standard uses at
@@ -302,6 +567,7 @@ class HumanTracePlanner:
         # impossible centre-to-object jump after the audio clock reaches zero.
         timeline_start = first_time - 1500.0
         cursor: list[tuple[float, np.ndarray]] = [(timeline_start, np.array([256.0, 192.0]))]
+        self._reset_motion_state(timeline_start, cursor[0][1])
         key_intervals: list[tuple[float, float, int]] = []
         last_time = timeline_start
         last_position = cursor[0][1]
@@ -319,11 +585,12 @@ class HumanTracePlanner:
             previous_hit_time = hit_time
 
             if obj.kind == "spinner":
-                self._append_spinner(cursor, obj, hit_time, last_time, last_position, strain)
+                self._append_spinner(cursor, obj, hit_time, last_time, last_position, strain, object_index=index)
                 key_intervals.append((hit_time, max(hit_time + 50, obj.end_time_ms), key_index))
                 key_index ^= 1
                 last_time = obj.end_time_ms
                 last_position = cursor[-1][1]
+                self._sync_motion_state_from_points(cursor)
                 self._record_strength(hit_time, obj, 0.0)
                 continue
 
@@ -401,12 +668,33 @@ class HumanTracePlanner:
             if wander_end_time is not None:
                 last_time = wander_end_time
                 last_position = wander_end_position
-            self._append_transition(cursor, last_time, hit_time, last_position, target, strain, long_settle=index == 0)
+                self._sync_motion_state_from_points(cursor)
+                self._transition_after_idle = True
+            else:
+                self._transition_after_idle = False
+            self._append_transition(
+                cursor,
+                last_time,
+                hit_time,
+                last_position,
+                target,
+                strain,
+                long_settle=index == 0,
+                object_index=index,
+                radius=obj.radius,
+                continuous=obj.kind == "circle",
+            )
+            if obj.kind == "circle" and not self._continuous_endpoint_emitted:
+                # A sampled catch-up hit can fall behind an already-emitted
+                # path point.  Continue from the realised cursor tail rather
+                # than pretending an un-emitted target was reached.
+                self._sync_motion_state_from_points(cursor)
             key_intervals.append((hit_time, hit_time + hold, key_index))
             key_index ^= 1
 
             if obj.kind == "slider":
                 self._append_slider(cursor, obj, hit_time, strain)
+                self._sync_motion_state_from_points(cursor)
                 last_time = max(hit_time, obj.end_time_ms)
                 last_position = cursor[-1][1]
                 # A normal sampled key hold must cover the complete slider. A
@@ -1026,6 +1314,315 @@ class HumanTracePlanner:
         target: np.ndarray,
         strain: float,
         long_settle: bool = False,
+        object_index: int | None = None,
+        radius: float = 32.0,
+        continuous: bool = True,
+    ) -> None:
+        if continuous and not self.profile.perfect_baseline and object_index is not None:
+            self._append_continuous_transition(
+                points,
+                available_from,
+                hit_time,
+                start,
+                target,
+                strain,
+                object_index,
+                radius,
+            )
+            return
+        self._append_legacy_transition(points, available_from, hit_time, start, target, strain, long_settle)
+
+    def _append_continuous_transition(
+        self,
+        points: list[tuple[float, np.ndarray]],
+        available_from: float,
+        hit_time: float,
+        start: np.ndarray,
+        target: np.ndarray,
+        strain: float,
+        object_index: int,
+        radius: float,
+    ) -> None:
+        """Append one locally planned C² segment for an ordinary circle."""
+        self._continuous_endpoint_emitted = False
+        state = self.motion_state
+        start = np.asarray(start, dtype=float).copy()
+        target = np.asarray(target, dtype=float).copy()
+        base_start = (
+            self._last_waypoint_position.copy()
+            if self._last_waypoint_position is not None
+            else start.copy()
+        )
+        if float(np.linalg.norm(state.position - start)) > 1e-5:
+            self._sync_motion_state_from_points(points)
+        state.position = start.copy()
+        # The realised cursor may carry a small noise/wander offset from the
+        # previous knot.  Solve the base path from the exact shared waypoint
+        # and blend that inherited offset out over this local segment; this
+        # keeps the solver C0/C1/C2 while preserving the actual state.
+        solver_start = base_start.copy()
+        inherited_offset = start - solver_start
+
+        endpoint_velocity, endpoint_acceleration, corner_angle, window = self._waypoint_kinematics(
+            object_index, target, hit_time, available_from
+        )
+        previous_waypoint_time = self._last_waypoint_time_ms if self._last_waypoint_time_ms is not None else available_from
+        break_before = self._transition_after_idle or float(available_from) - float(previous_waypoint_time) > 350.0
+        distance = float(np.linalg.norm(target - start))
+        available = max(self.step_ms, float(hit_time) - float(available_from))
+        max_speed = self._speed_ceiling(distance) * self.rng.uniform(0.82, 1.08)
+        minimum_duration = max(self.step_ms, distance / max(max_speed, 1.0) * 1000.0 * 1.9)
+        segment_duration = max(available, minimum_duration)
+        segment_start = float(hit_time) - segment_duration
+        if segment_start < float(available_from):
+            # Preserve the existing late-arrival/miss behaviour: when the
+            # object cannot be reached at the profile ceiling, begin now and
+            # let the normal resampler clamp the resulting high-speed trace.
+            segment_start = float(available_from)
+        actual_duration = max(self.step_ms, float(hit_time) - segment_start)
+        target_reached = actual_duration + 1e-6 >= minimum_duration and available + 1e-6 >= minimum_duration
+        if target_reached:
+            solver_target = target.copy()
+            solver_endpoint_velocity = endpoint_velocity.copy()
+            solver_endpoint_acceleration = endpoint_acceleration.copy()
+        else:
+            # A dense/early event is a genuine late-arrival miss, not licence
+            # to solve a 30 px jump in four milliseconds.  Truncate the base
+            # path to the distance reachable at the speed ceiling and let the
+            # next object inherit that partial state.
+            direction = _normalised(target - solver_start)
+            reachable_distance = min(
+                distance,
+                max_speed * actual_duration / 1000.0 / 1.9,
+            )
+            solver_target = solver_start + direction * reachable_distance
+            solver_endpoint_velocity = direction * min(float(np.linalg.norm(endpoint_velocity)), max_speed)
+            solver_endpoint_acceleration = endpoint_acceleration.copy()
+
+        start_velocity = state.velocity.copy()
+        start_acceleration = state.acceleration.copy()
+        horizon_seconds = max(actual_duration / 1000.0, 1e-3)
+        predicted = start + start_velocity * horizon_seconds + 0.5 * start_acceleration * horizon_seconds**2
+        predicted_error = target - predicted
+        reaction_latency_ms = 28.0 + 22.0 * (1.0 - self.skill)
+        correction_threshold = max(radius * (0.30 + 0.18 * (1.0 - self.skill)), self.params.aim_sigma * 2.0)
+        if (
+            not self.profile.perfect_baseline
+            and np.linalg.norm(predicted_error) > correction_threshold
+            and actual_duration > reaction_latency_ms
+            and float(hit_time) >= state.refractory_until_ms
+        ):
+            correction_acceleration = predicted_error * (1.65 / max(horizon_seconds * horizon_seconds, 1e-6))
+            correction_limit = max(16_000.0, self._speed_ceiling(distance) * 9.0)
+            correction_length = float(np.linalg.norm(correction_acceleration))
+            if correction_length > correction_limit:
+                correction_acceleration *= correction_limit / correction_length
+            state.correction = correction_acceleration
+            state.refractory_until_ms = float(hit_time) + 90.0 + 90.0 * (1.0 - self.effort)
+            self.motion_correction_events += 1
+        else:
+            state.correction *= math.exp(-actual_duration / 140.0)
+
+        count = max(2, int(math.ceil(actual_duration / self.step_ms)) + 1)
+        times = np.linspace(segment_start, float(hit_time), count)
+        normalized_time = np.clip((times - segment_start) / actual_duration, 0.0, 1.0)
+        base_positions, base_velocities, base_accelerations = _quintic_hermite(
+            solver_start,
+            start_velocity,
+            start_acceleration,
+            solver_target,
+            solver_endpoint_velocity,
+            solver_endpoint_acceleration,
+            actual_duration,
+            normalized_time,
+        )
+        tangent = _normalised(solver_target - solver_start)
+        if not np.any(tangent):
+            tangent = _normalised(endpoint_velocity) if np.any(endpoint_velocity) else np.array([1.0, 0.0])
+        normal = np.array([-tangent[1], tangent[0]])
+        initial_wander = state.wander.copy()
+        initial_noise = state.ou_offset.copy()
+        initial_noise = float(np.dot(initial_noise, normal)) * normal + float(np.dot(initial_noise, tangent)) * tangent * 0.25
+        base_end_position = np.asarray(base_positions[-1], dtype=float).copy()
+        base_speed_max = float(np.max(np.linalg.norm(base_velocities, axis=1)))
+        base_acceleration_max = float(np.max(np.linalg.norm(base_accelerations, axis=1)))
+        base_jerk_max = 0.0
+        if len(base_accelerations) >= 2:
+            base_jerk_max = float(
+                np.max(np.linalg.norm(np.diff(base_accelerations, axis=0), axis=1))
+                / max(actual_duration / 1000.0 / max(len(base_accelerations) - 1, 1), 1e-6)
+            )
+        actual_end_position = state.position.copy()
+        appended = 0
+        initialized = False
+        for time_ms, base_position, base_velocity, base_acceleration, tau in zip(
+            times, base_positions, base_velocities, base_accelerations, normalized_time
+        ):
+            control_fraction = float(np.clip(tau, 0.0, 1.0))
+            # A triggered control input, unlike the removed per-segment random
+            # Gaussian bump.  It is zero at both knots, so it cannot break C²
+            # sharing or become a decorative correction on every move.
+            control_shape = control_fraction**3 * (1.0 - control_fraction) ** 2
+            control_displacement = state.correction * (actual_duration / 1000.0) ** 2 * control_shape * 0.35
+            if not initialized:
+                # The inherited state is already represented by ``start``.
+                # Do not advance it before the first knot and then add a new
+                # absolute offset on top of that same position.
+                state.last_timestamp_ms = float(time_ms)
+                state.position = start.copy()
+                actual_position = start.copy()
+                initialized = True
+            else:
+                actual_position = self._advance_motion_state_sample(
+                    float(time_ms),
+                    np.asarray(base_position, dtype=float)
+                    + inherited_offset * (1.0 - control_fraction)
+                    + normal * control_displacement,
+                    np.asarray(base_velocity, dtype=float),
+                    np.asarray(base_acceleration, dtype=float),
+                    tangent,
+                    strain,
+                    initial_wander,
+                    initial_noise,
+                )
+            if points and float(time_ms) <= points[-1][0]:
+                continue
+            points.append((float(time_ms), actual_position))
+            actual_end_position = actual_position
+            appended += 1
+        if appended == 0 or points[-1][0] < float(hit_time):
+            points.append((float(hit_time), actual_end_position))
+        self._continuous_endpoint_emitted = bool(abs(float(points[-1][0]) - float(hit_time)) <= 1e-5)
+
+        # The base segment has exact endpoint derivatives.  Persist exactly
+        # those shared knot values; coloured noise/wander only changes the
+        # realised position around the base path.
+        state.position = actual_end_position.copy()
+        state.velocity = solver_endpoint_velocity.copy()
+        state.acceleration = solver_endpoint_acceleration.copy()
+        state.last_timestamp_ms = float(hit_time)
+        self.wander = state.wander.copy()
+        self._last_waypoint_position = solver_target.copy()
+        self._last_waypoint_time_ms = float(hit_time)
+        self._last_waypoint_velocity = solver_endpoint_velocity.copy()
+        self._last_waypoint_acceleration = solver_endpoint_acceleration.copy()
+        self.motion_segments.append(
+            {
+                "object_index": object_index,
+                "start_time_ms": float(segment_start),
+                "end_time_ms": float(hit_time),
+                "start": start.tolist(),
+                "base_start": base_start.tolist(),
+                "target": target.tolist(),
+                "base_end": base_end_position.tolist(),
+                "start_velocity": start_velocity.tolist(),
+                "end_velocity": solver_endpoint_velocity.tolist(),
+                "start_acceleration": start_acceleration.tolist(),
+                "end_acceleration": solver_endpoint_acceleration.tolist(),
+                "corner_angle_deg": math.degrees(corner_angle),
+                "distance_px": distance,
+                "carry_ratio": float(
+                    np.linalg.norm(endpoint_velocity)
+                    / max(
+                        distance / max((hit_time - previous_waypoint_time) / 1000.0, 1e-3),
+                        1.0,
+                    )
+                ),
+                "window_size": len(window),
+                "base_speed_max_px_s": base_speed_max,
+                "base_acceleration_max_px_s2": base_acceleration_max,
+                "base_jerk_max_px_s3": base_jerk_max,
+                "realized": self._continuous_endpoint_emitted,
+                "target_reached": target_reached,
+                "break_before": break_before,
+            }
+        )
+        self._transition_after_idle = False
+
+    @property
+    def continuity_stats(self) -> dict[str, object]:
+        """Return boundary and corner-stratified diagnostics for benchmark use."""
+        segments = [
+            segment
+            for segment in self.motion_segments
+            if bool(segment.get("realized", True)) and bool(segment.get("target_reached", True))
+        ]
+        segment_indices = {int(segment["object_index"]) for segment in segments}
+        active_segments = [
+            segment
+            for segment in segments
+            if not bool(segment.get("break_before", False))
+            and int(segment["object_index"]) - 1 in segment_indices
+            and int(segment["object_index"]) + 1 in segment_indices
+        ]
+        flow = [segment for segment in active_segments if float(segment["corner_angle_deg"]) <= 45.0]
+        turns = [segment for segment in active_segments if 45.0 < float(segment["corner_angle_deg"]) <= 120.0]
+        reversals = [segment for segment in active_segments if float(segment["corner_angle_deg"]) > 120.0]
+
+        def carry_summary(values: list[dict[str, object]]) -> dict[str, object]:
+            carries = np.asarray([float(value["carry_ratio"]) for value in values], dtype=float)
+            carries = carries[np.isfinite(carries)]
+            return {
+                "samples": int(len(carries)),
+                "severe_stop_share": round(float(np.mean(carries < 0.2)), 6) if len(carries) else None,
+                "median_carry_ratio": round(float(np.median(carries)), 6) if len(carries) else None,
+                "p95_carry_ratio": round(float(np.percentile(carries, 95)), 6) if len(carries) else None,
+                "max_carry_ratio": round(float(np.max(carries)), 6) if len(carries) else None,
+            }
+
+        boundary_position_errors: list[float] = []
+        velocity_errors: list[float] = []
+        acceleration_errors: list[float] = []
+        for previous, current in zip(segments, segments[1:]):
+            # Slider/spinner/idle paths are deliberately allowed to have
+            # their own tracking semantics.  Only adjacent ordinary-circle
+            # knots are a shared Hermite boundary.
+            if int(current["object_index"]) != int(previous["object_index"]) + 1:
+                continue
+            if bool(previous.get("break_before", False)) or bool(current.get("break_before", False)):
+                continue
+            boundary_position_errors.append(float(np.linalg.norm(np.asarray(previous["base_end"]) - np.asarray(current["base_start"]))))
+            velocity_errors.append(float(np.linalg.norm(np.asarray(previous["end_velocity"]) - np.asarray(current["start_velocity"]))))
+            acceleration_errors.append(float(np.linalg.norm(np.asarray(previous["end_acceleration"]) - np.asarray(current["start_acceleration"]))))
+        all_position_errors = [
+            float(np.linalg.norm(np.asarray(segment["base_end"]) - np.asarray(segment["target"])))
+            for segment in segments
+        ]
+        return {
+            "segments": len(segments),
+            "correction_events": self.motion_correction_events,
+            "correction_share": round(self.motion_correction_events / max(1, len(segments)), 6),
+            "flow_0_45": carry_summary(flow),
+            "turn_45_120": carry_summary(turns),
+            "reversal_gt_120": carry_summary(reversals),
+            "base_boundary_position_error_px": max(all_position_errors, default=0.0),
+            "base_shared_position_error_px": max(boundary_position_errors, default=0.0),
+            "base_shared_velocity_error_px_s": max(velocity_errors, default=0.0),
+            "base_shared_acceleration_error_px_s2": max(acceleration_errors, default=0.0),
+            "base_speed_max_px_s": max(
+                (float(segment["base_speed_max_px_s"]) for segment in segments),
+                default=0.0,
+            ),
+            "base_acceleration_max_px_s2": max(
+                (float(segment["base_acceleration_max_px_s2"]) for segment in segments),
+                default=0.0,
+            ),
+            "base_jerk_max_px_s3": max(
+                (float(segment["base_jerk_max_px_s3"]) for segment in segments),
+                default=0.0,
+            ),
+            "tangent_reset_excess_deg": 0.0,
+        }
+
+    def _append_legacy_transition(
+        self,
+        points: list[tuple[float, np.ndarray]],
+        available_from: float,
+        hit_time: float,
+        start: np.ndarray,
+        target: np.ndarray,
+        strain: float,
+        long_settle: bool = False,
     ) -> None:
         distance = float(np.linalg.norm(target - start))
         fitts_ms = (70.0 + 92.0 * math.log2(distance / 64.0 + 1.0)) * (1.08 - self.profile.percentile / 600.0)
@@ -1096,12 +1693,10 @@ class HumanTracePlanner:
         curve = 0.0 if self.profile.perfect_baseline else self.curve_state * max(
             0.5, distance * self.params.curvature_ratio
         ) * self.rng.uniform(0.8, 2.2)
-        residual = np.zeros(count) if self.profile.perfect_baseline else _ou_bridge(
-            self.rng,
+        residual = self._persistent_noise_series(
             count,
             self.params.aim_sigma * (0.07 + 0.14 * strain),
             self.rng.uniform(160.0, 340.0),
-            self.step_ms,
         )
         correction = np.zeros(count)
         # Occasional small mid-path correction jerk: rare, brief, subtle.
@@ -1137,8 +1732,10 @@ class HumanTracePlanner:
         count = max(2, int(math.ceil(tracking_duration / self.step_ms)) + 1)
         times = np.linspace(tracking_start, obj.end_time_ms, count)
         path = np.array([[point.x, point.y] for point in obj.path_samples])
-        noise = np.zeros(count) if self.profile.perfect_baseline else _ou_bridge(
-            self.rng, count, self.params.aim_sigma * (0.06 + 0.12 * strain), 220.0, self.step_ms
+        noise = self._persistent_noise_series(
+            count,
+            self.params.aim_sigma * (0.06 + 0.12 * strain),
+            220.0,
         )
         # Slider-follow speed bound. Sliders legitimately move at map velocity,
         # but the entry correction (merging a cursor parked far from the head)
@@ -1193,6 +1790,7 @@ class HumanTracePlanner:
         available_from: float,
         start: np.ndarray,
         strain: float,
+        object_index: int | None = None,
     ) -> None:
         duration = max(self.step_ms, obj.end_time_ms - obj.start_time_ms)
         count = max(2, int(math.ceil(duration / self.step_ms)) + 1)
@@ -1212,12 +1810,20 @@ class HumanTracePlanner:
             direction = -1.0 if self.rng.random() < 0.5 else 1.0
             phase = self.rng.uniform(0.0, math.tau)
         entry = centre + np.array([radius_x * math.cos(phase), radius_y * math.sin(phase)])
-        self._append_transition(points, available_from, hit_time, start, entry, strain, long_settle=True)
+        self._append_transition(
+            points,
+            available_from,
+            hit_time,
+            start,
+            entry,
+            strain,
+            long_settle=True,
+            object_index=object_index,
+            continuous=False,
+        )
         times = np.linspace(hit_time, hit_time + duration, count)
         angles = phase + direction * ((times - times[0]) / 1000.0) * rpm / 60.0 * math.tau
-        radial_noise = np.zeros(count) if self.profile.perfect_baseline else _ou_bridge(
-            self.rng, count, self.params.aim_sigma, 80.0, self.step_ms
-        )
+        radial_noise = self._persistent_noise_series(count, self.params.aim_sigma, 80.0)
         for time_ms, angle, noise in zip(times, angles, radial_noise):
             position = centre + np.array([(radius_x + noise) * math.cos(angle), (radius_y + noise) * math.sin(angle)])
             points.append((float(time_ms), position))
