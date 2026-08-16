@@ -7,7 +7,9 @@ from typing import Any
 
 import numpy as np
 
+from .context import build_contexts
 from .io import load_map_plan
+from .matching import PressEvent, match_press_events
 
 
 def _open(path: Path):
@@ -23,18 +25,6 @@ def _read_replay(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     return header, frames
 
 
-def _context(kind: str, distance: float, interval_ms: float) -> str:
-    if kind in {"slider", "spinner"}:
-        return kind
-    if interval_ms < 130:
-        return "stream"
-    if interval_ms < 220:
-        return "burst"
-    if distance > 120:
-        return "jump"
-    return "transition"
-
-
 def extract_features(replay_path: str, map_plan_path: str, output_path: str) -> dict[str, Any]:
     """Match decoded replay key-downs to lazer-transformed hit objects and write Parquet."""
     import polars as pl
@@ -47,31 +37,25 @@ def extract_features(replay_path: str, map_plan_path: str, output_path: str) -> 
     xs = np.asarray([float(f["x"]) for f in frames])
     ys = np.asarray([float(f["y"]) for f in frames])
 
-    downs: list[tuple[float, int, int]] = []
-    active_since: dict[int, float] = {}
-    holds: dict[tuple[int, int], float] = {}
+    downs: list[PressEvent] = []
     previous = [False, False]
     for index, frame in enumerate(frames):
         now = float(frame["time_ms"]) / rate
         state = [bool(frame.get("k1")), bool(frame.get("k2"))]
         for key in range(2):
             if state[key] and not previous[key]:
-                downs.append((now, key, index))
-                active_since[key] = now
-            elif previous[key] and not state[key] and key in active_since:
-                holds[(key, index)] = now - active_since.pop(key)
+                downs.append(PressEvent(time_ms=now, key=key, frame_index=index))
         previous = state
 
     rows: list[dict[str, Any]] = []
-    used: set[int] = set()
-    previous_object = None
-    for obj in plan.objects:
-        candidates = [(abs(t - obj.start_time_ms), i, t, key, frame_i) for i, (t, key, frame_i) in enumerate(downs) if i not in used]
-        nearest = min(candidates, default=None)
-        hit = nearest is not None and nearest[0] <= max(180.0, obj.hit_windows.miss_ms)
+    contexts = build_contexts(plan)
+    assignments = match_press_events(plan.objects, downs, minimum_window_ms=180.0)
+    for object_position, obj in enumerate(plan.objects):
+        down_index = assignments.get(object_position)
+        hit = down_index is not None
         if hit:
-            _, down_index, down_time, key, frame_index = nearest
-            used.add(down_index)
+            press = downs[down_index]
+            down_time, key, frame_index = press.time_ms, press.key, press.frame_index
             aim_x = float(np.interp(down_time, times, xs)) - obj.position.x
             aim_y = float(np.interp(down_time, times, ys)) - obj.position.y
             release_time = next(
@@ -83,23 +67,12 @@ def extract_features(replay_path: str, map_plan_path: str, output_path: str) -> 
         else:
             key, aim_x, aim_y, hold, hit_error = -1, np.nan, np.nan, np.nan, np.nan
 
-        if previous_object is None:
-            distance, interval = 0.0, 1000.0
-        else:
-            distance = float(np.hypot(obj.position.x - previous_object.end_position.x, obj.position.y - previous_object.end_position.y))
-            interval = obj.start_time_ms - previous_object.end_time_ms
-        rows.append(
+        feature_row = contexts[object_position].as_feature_dict()
+        feature_row.update(
             {
                 "player_hash": header["player_hash"],
                 "beatmap_sha256": plan.beatmap_sha256,
                 "object_index": obj.index,
-                "context": _context(obj.kind, distance, interval),
-                "object_kind": obj.kind,
-                "distance": distance,
-                "interval_ms": interval,
-                "strain": min(1.0, distance / max(16.0, interval) / 2.2),
-                "clock_rate": rate,
-                "hidden": "HD" in plan.mods,
                 "hit": hit,
                 "key": key,
                 "hit_error_ms": hit_error,
@@ -108,7 +81,7 @@ def extract_features(replay_path: str, map_plan_path: str, output_path: str) -> 
                 "hold_duration_ms": hold,
             }
         )
-        previous_object = obj
+        rows.append(feature_row)
 
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)

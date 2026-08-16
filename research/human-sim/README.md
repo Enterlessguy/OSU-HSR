@@ -79,6 +79,68 @@ deterministic cross-section of the installed osu!standard library through the
 official lazer exporter and machine-perfect planner. It verifies one key-down
 per object, exact head timing/position, slider-tail holds, and trace continuity.
 
+## Statistical regression benchmark
+
+Use the reusable offline benchmark for routine planner checks:
+
+```powershell
+human-sim benchmark --scope compact --output output/analysis/statistical-benchmark.json
+```
+
+`compact`, `default`, and `full` select progressively larger checked-in map
+sets; `--map` can be repeated for an explicit set and `--seeds` accepts a
+comma-separated deterministic seed list. The JSON report and text summary
+include exact same-seed reproducibility, one-to-one object/press coverage,
+cross-seed landing delta/correlation, lag-2..8 periodicity, normalized landing
+radius (mean/p95/rim share), angular entropy, successful landings, timing
+distribution, cursor velocity/acceleration/jerk, and skill/effort monotonicity.
+
+The broad default gates are artifact detectors rather than snapshot targets:
+absolute cross-seed correlation <= 0.60 when every seed pair has at least 32
+common object samples, lag correlation <= 0.65, rim share <= 0.20, and normalized angular
+entropy >= 0.60 when at least 32 samples are available. The benchmark's primary
+`radial` values describe planned landing
+offsets for correctly matched presses; `press_radial` is retained separately
+to expose cursor/timing contamination. Normal stochastic variation should not
+be handled by tightening these limits.
+
+The benchmark is classified as
+`planner-only/not-runtime-validated` when no runner telemetry is supplied.
+That is intentional: a clean offline planner result is not evidence that a
+Windows dispatch run was clean.
+
+## Shared pattern context
+
+Planner, replay extraction, modeling, and analysis use one structured context
+implementation. Each object exposes its kind, interval, distance, approach
+velocity, direction-change angle, rhythm ratio/continuation, local density and
+strain history, robust geometry, clock rate, active mods, and available
+difficulty metadata. The small compatibility labels remain (`stream`, `burst`,
+`jump`, `transition`, `slider`, `spinner`), but dense long jumps and sharp
+angle changes are not labelled `stream` solely because their intervals are
+short. Missing metadata and first-object history use finite neutral defaults.
+
+## Runtime quality gate
+
+The runner writes its existing human-readable diagnostics plus a structured
+`Runtime telemetry: {...}` record to the same log. Assess it with:
+
+```powershell
+human-sim runtime-quality output/auto-run-YYYYMMDD-HHMMSS.log
+```
+
+Default thresholds are dispatch p95 1 ms, dispatch p99 5 ms, dispatch max
+250 ms, key-down p95 2.5 ms, `SendInput` p95 2.5 ms, `SendInput` max 100 ms,
+deadline coalescing <= 2% of delivered frames, and heartbeat gaps <= 2 s.
+Override individual values with the corresponding `--max-*`,
+`--max-coalesced-fraction`, or `--max-heartbeat-gap-ms` options. A run is
+`runtime-validated/clean`, `runtime-degraded`, or `runtime-invalid`; focus,
+window/DPI, protocol, and heartbeat failures invalidate the run. Missing
+telemetry is reported as `planner-only/not-runtime-validated`, with the raw
+diagnostics preserved in the JSON result. `benchmark --runtime-telemetry`
+attaches the same assessment to its machine-readable report and returns a
+failure code for degraded/invalid runtime evidence.
+
 ## Corpus pipeline
 
 `collect` resumes official API replay downloads from a score-ID list. Decode

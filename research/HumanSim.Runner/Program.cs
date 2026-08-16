@@ -605,6 +605,7 @@ internal static class Program
         var sendDurationsUs = new LatencyStats();
         int deadlineCoalescedFrames = 0;
         int cadenceSkippedFrames = trace.Frames.Count - dispatchFrames.Count;
+        bool executionCompleted = false;
         long nextGuardQpc = Stopwatch.GetTimestamp();
         long nextTelemetryUs = 5_000_000;
         ThreadPriority originalPriority = Thread.CurrentThread.Priority;
@@ -708,6 +709,7 @@ internal static class Program
                     do nextTelemetryUs += 5_000_000; while (nextTelemetryUs <= f.TimeUs);
                 }
             }
+            executionCompleted = true;
         }
         finally
         {
@@ -718,6 +720,27 @@ internal static class Program
             Input.ReleaseKey(options.RightKey);
             if (dispatchLatenessUs.Count > 0)
                 Console.WriteLine($"Dispatch lateness (us): all p50={dispatchLatenessUs.Percentile(0.50):F1}, p95={dispatchLatenessUs.Percentile(0.95):F1}, p99={dispatchLatenessUs.Percentile(0.99):F1}, max={dispatchLatenessUs.Max:F1}; key-down p95={keyDownLatenessUs.Percentile(0.95):F1}, max={keyDownLatenessUs.Max:F1}; SendInput p95={sendDurationsUs.Percentile(0.95):F1}, max={sendDurationsUs.Max:F1}; cadence-skipped={cadenceSkippedFrames:N0}, deadline-coalesced={deadlineCoalescedFrames:N0}, delivered={dispatchLatenessUs.Count:N0}.");
+            Console.WriteLine($"Runtime telemetry: {JsonSerializer.Serialize(new
+            {
+                schema_version = 1,
+                kind = "runtime_telemetry",
+                status = executionCompleted ? "completed" : "aborted",
+                timing_only = options.TimingOnly,
+                dispatch_p50_us = dispatchLatenessUs.Percentile(0.50),
+                dispatch_p95_us = dispatchLatenessUs.Percentile(0.95),
+                dispatch_p99_us = dispatchLatenessUs.Percentile(0.99),
+                dispatch_max_us = dispatchLatenessUs.Max,
+                key_down_p95_us = keyDownLatenessUs.Percentile(0.95),
+                key_down_max_us = keyDownLatenessUs.Max,
+                send_input_p95_us = sendDurationsUs.Percentile(0.95),
+                send_input_max_us = sendDurationsUs.Max,
+                cadence_skipped_frames = cadenceSkippedFrames,
+                deadline_coalesced_frames = deadlineCoalescedFrames,
+                delivered_frames = dispatchLatenessUs.Count,
+                heartbeat_count = connection.HeartbeatCount,
+                heartbeat_max_gap_ms = connection.HeartbeatMaxGapMs,
+                clock_fit_valid = connection.FitValid,
+            })}");
         }
     }
 
@@ -834,6 +857,9 @@ internal sealed class ConnectionMonitor
     private long clockQpc;
     private double gameplayClockTimeMs;
     private long lastHeartbeat = Stopwatch.GetTimestamp();
+    private long lastHeartbeatArrivalQpc;
+    private long heartbeatCount;
+    private long heartbeatMaxGapTicks;
     private volatile bool disconnected;
 
     private readonly long[] sampleQpc = new long[max_samples];
@@ -896,6 +922,21 @@ internal sealed class ConnectionMonitor
                 double clockTime = message.RootElement.GetProperty("gameplay_clock_time_ms").GetDouble();
                 if (qpc <= 0 || !double.IsFinite(clockTime))
                     throw new InvalidDataException("Research heartbeat clock sample is invalid.");
+                long arrivalQpc = Stopwatch.GetTimestamp();
+                long previousArrivalQpc = Interlocked.Exchange(ref lastHeartbeatArrivalQpc, arrivalQpc);
+                if (previousArrivalQpc > 0)
+                {
+                    long gap = Math.Max(0, arrivalQpc - previousArrivalQpc);
+                    long current;
+                    do
+                    {
+                        current = Interlocked.Read(ref heartbeatMaxGapTicks);
+                        if (gap <= current)
+                            break;
+                    }
+                    while (Interlocked.CompareExchange(ref heartbeatMaxGapTicks, gap, current) != current);
+                }
+                Interlocked.Increment(ref heartbeatCount);
                 lock (clockLock)
                 {
                     clockQpc = qpc;
@@ -914,7 +955,7 @@ internal sealed class ConnectionMonitor
                         recomputeFitLocked();
                     }
                 }
-                Interlocked.Exchange(ref lastHeartbeat, Stopwatch.GetTimestamp());
+                Interlocked.Exchange(ref lastHeartbeat, arrivalQpc);
             }
         }
         catch
@@ -972,6 +1013,19 @@ internal sealed class ConnectionMonitor
     }
 
     public bool IsDisconnected => disconnected;
+
+    public long HeartbeatCount => Interlocked.Read(ref heartbeatCount);
+
+    public double HeartbeatMaxGapMs => Interlocked.Read(ref heartbeatMaxGapTicks) * 1000.0 / Stopwatch.Frequency;
+
+    public bool FitValid
+    {
+        get
+        {
+            lock (clockLock)
+                return fitValid;
+        }
+    }
 
     public ClockSyncSnapshot Snapshot()
     {

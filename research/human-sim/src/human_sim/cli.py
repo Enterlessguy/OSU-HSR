@@ -8,12 +8,14 @@ import os
 from pathlib import Path
 import subprocess
 
+from .benchmark import format_summary, run_benchmark, write_report
 from .collector import collect_replays
 from .dataset import extract_features
 from .io import load_map_plan, write_trace
 from .library_audit import audit_library
 from .modeling import evaluate, fit_models
 from .planner import PLANNER_VERSION, HumanTracePlanner
+from .runtime_quality import RuntimeQualityConfig, assess_runtime_quality
 from .schemas import HumanProfile, RunManifest, SKILL_PRESETS
 from .validation import validate_trace
 
@@ -108,6 +110,59 @@ def _fit(args: argparse.Namespace) -> int:
 def _evaluate(args: argparse.Namespace) -> int:
     print(json.dumps(evaluate(args.human, args.synthetic, args.output, args.seed), indent=2, sort_keys=True))
     return 0
+
+
+def _parse_seeds(value: str) -> tuple[int, ...]:
+    seeds = tuple(int(part.strip()) for part in value.split(",") if part.strip())
+    if not seeds:
+        raise ValueError("--seeds must contain at least one integer")
+    return seeds
+
+
+def _runtime_quality_config(args: argparse.Namespace) -> RuntimeQualityConfig:
+    defaults = RuntimeQualityConfig()
+    return RuntimeQualityConfig(
+        max_dispatch_p95_us=float(args.max_dispatch_p95_us if args.max_dispatch_p95_us is not None else defaults.max_dispatch_p95_us),
+        max_dispatch_p99_us=float(args.max_dispatch_p99_us if args.max_dispatch_p99_us is not None else defaults.max_dispatch_p99_us),
+        max_dispatch_max_us=float(args.max_dispatch_max_us if args.max_dispatch_max_us is not None else defaults.max_dispatch_max_us),
+        max_key_down_p95_us=float(args.max_key_down_p95_us if args.max_key_down_p95_us is not None else defaults.max_key_down_p95_us),
+        max_send_input_p95_us=float(args.max_send_input_p95_us if args.max_send_input_p95_us is not None else defaults.max_send_input_p95_us),
+        max_send_input_max_us=float(args.max_send_input_max_us if args.max_send_input_max_us is not None else defaults.max_send_input_max_us),
+        max_deadline_coalesced_fraction=float(args.max_coalesced_fraction if args.max_coalesced_fraction is not None else defaults.max_deadline_coalesced_fraction),
+        max_heartbeat_gap_ms=float(args.max_heartbeat_gap_ms if args.max_heartbeat_gap_ms is not None else defaults.max_heartbeat_gap_ms),
+        minimum_heartbeat_count=int(args.minimum_heartbeat_count if args.minimum_heartbeat_count is not None else defaults.minimum_heartbeat_count),
+    )
+
+
+def _benchmark(args: argparse.Namespace) -> int:
+    quality = None
+    classification = "planner-only/not-runtime-validated"
+    if args.runtime_telemetry:
+        quality = assess_runtime_quality(args.runtime_telemetry, config=_runtime_quality_config(args))
+        classification = quality["classification"]
+    report = run_benchmark(
+        scope=args.scope,
+        map_paths=args.map_paths,
+        seeds=_parse_seeds(args.seeds),
+        skill=args.skill,
+        effort=args.effort,
+        sample_rate_hz=args.sample_rate,
+        classification=classification,
+        runtime_quality=quality,
+    )
+    write_report(report, args.output, args.summary_output)
+    print(format_summary(report))
+    if not report["gates"]["pass"]:
+        return 1
+    if quality is not None and not quality["accepted"]:
+        return 1
+    return 0
+
+
+def _runtime_quality(args: argparse.Namespace) -> int:
+    assessment = assess_runtime_quality(args.source, config=_runtime_quality_config(args))
+    print(json.dumps(assessment, indent=2, sort_keys=True))
+    return 0 if assessment["accepted"] else 1
 
 
 def _audit_library(args: argparse.Namespace) -> int:
@@ -264,6 +319,44 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("output")
     evaluate_parser.add_argument("--seed", type=int, default=1)
     evaluate_parser.set_defaults(handler=_evaluate)
+    benchmark = subparsers.add_parser("benchmark", help="Run deterministic multi-map statistical planner regression checks")
+    benchmark.add_argument("--scope", choices=("compact", "default", "full"), default="compact")
+    benchmark.add_argument("--map", dest="map_paths", action="append", help="Explicit map plan; repeat for multiple maps")
+    benchmark.add_argument("--seeds", default=",".join(str(seed) for seed in (42, 43, 44, 45, 46)))
+    benchmark.add_argument("--skill", type=float, default=50.0)
+    benchmark.add_argument("--effort", type=float, default=80.0)
+    benchmark.add_argument("--sample-rate", type=int, default=500)
+    benchmark.add_argument("--output", default="output/analysis/statistical-benchmark.json")
+    benchmark.add_argument("--summary-output", default="output/analysis/statistical-benchmark.txt")
+    benchmark.add_argument("--runtime-telemetry", help="Runner log or telemetry JSON; omit for planner-only classification")
+    for name, flag, default in (
+        ("max_dispatch_p95_us", "--max-dispatch-p95-us", None),
+        ("max_dispatch_p99_us", "--max-dispatch-p99-us", None),
+        ("max_dispatch_max_us", "--max-dispatch-max-us", None),
+        ("max_key_down_p95_us", "--max-key-down-p95-us", None),
+        ("max_send_input_p95_us", "--max-send-input-p95-us", None),
+        ("max_send_input_max_us", "--max-send-input-max-us", None),
+        ("max_coalesced_fraction", "--max-coalesced-fraction", None),
+        ("max_heartbeat_gap_ms", "--max-heartbeat-gap-ms", None),
+        ("minimum_heartbeat_count", "--minimum-heartbeat-count", None),
+    ):
+        benchmark.add_argument(flag, dest=name, type=float if name != "minimum_heartbeat_count" else int, default=default)
+    benchmark.set_defaults(handler=_benchmark)
+    quality = subparsers.add_parser("runtime-quality", help="Assess runner latency and integrity telemetry")
+    quality.add_argument("source", help="Runner log, telemetry JSON, or '-' for inline stdin is not supported")
+    for name, flag, default in (
+        ("max_dispatch_p95_us", "--max-dispatch-p95-us", None),
+        ("max_dispatch_p99_us", "--max-dispatch-p99-us", None),
+        ("max_dispatch_max_us", "--max-dispatch-max-us", None),
+        ("max_key_down_p95_us", "--max-key-down-p95-us", None),
+        ("max_send_input_p95_us", "--max-send-input-p95-us", None),
+        ("max_send_input_max_us", "--max-send-input-max-us", None),
+        ("max_coalesced_fraction", "--max-coalesced-fraction", None),
+        ("max_heartbeat_gap_ms", "--max-heartbeat-gap-ms", None),
+        ("minimum_heartbeat_count", "--minimum-heartbeat-count", None),
+    ):
+        quality.add_argument(flag, dest=name, type=float if name != "minimum_heartbeat_count" else int, default=default)
+    quality.set_defaults(handler=_runtime_quality)
     audit = subparsers.add_parser(
         "audit-library",
         help="Decode and perfect-plan a deterministic sample of the local lazer osu!standard library",

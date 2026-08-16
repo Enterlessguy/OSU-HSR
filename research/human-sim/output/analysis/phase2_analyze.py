@@ -23,7 +23,9 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]  # research/human-sim
 sys.path.insert(0, str(ROOT / "src"))
 
+from human_sim.context import build_contexts  # noqa: E402
 from human_sim.io import load_map_plan  # noqa: E402
+from human_sim.matching import match_press_events, rising_press_events  # noqa: E402
 from human_sim.planner import PLANNER_VERSION, HumanTracePlanner  # noqa: E402
 from human_sim.schemas import HumanProfile  # noqa: E402
 
@@ -45,30 +47,6 @@ PROFILES = [
 ]
 
 
-def _context(kind: str, distance: float, interval_ms: float) -> str:
-    if kind in {"slider", "spinner"}:
-        return kind
-    if interval_ms < 130:
-        return "stream"
-    if interval_ms < 220:
-        return "burst"
-    if distance > 120:
-        return "jump"
-    return "transition"
-
-
-def press_events(frames):
-    held1 = held2 = False
-    events = []
-    for frame in frames:
-        if frame.k1 and not held1:
-            events.append(frame.time_us / 1000.0)
-        if frame.k2 and not held2:
-            events.append(frame.time_us / 1000.0)
-        held1, held2 = frame.k1, frame.k2
-    return np.array(sorted(events))
-
-
 def analyze_run(map_plan, frames, skill, effort, ghost_flags):
     frame_times = np.array([f.time_us / 1000.0 for f in frames])
     frame_xs = np.array([f.x for f in frames])
@@ -79,59 +57,29 @@ def analyze_run(map_plan, frames, skill, effort, ghost_flags):
         index = min(max(index, 0), len(frame_times) - 1)
         return float(frame_xs[index]), float(frame_ys[index])
 
-    presses = press_events(frames)
     timeline_start = map_plan.objects[0].start_time_ms - 1500.0
-    press_times_absolute = presses + timeline_start
+    events = rising_press_events(frames, timeline_start_ms=timeline_start)
+    press_times_absolute = np.array([event.time_ms for event in events])
 
     # Global greedy press matching: assign each press to the object it fits
     # best (smallest |timing error|), each press used once and each object
     # once. The old per-object nearest search cascaded - one missing press in
     # a dense section made neighbours consume each other's presses and
     # inflated the miss count.
-    pairs = []
-    for obj_index, obj in enumerate(map_plan.objects):
-        if obj.kind == "spinner":
-            continue
-        window = obj.hit_windows.miss_ms
-        candidates = np.where(np.abs(press_times_absolute - obj.start_time_ms) <= window)[0]
-        for press_index in candidates:
-            pairs.append(
-                (
-                    abs(float(press_times_absolute[press_index]) - obj.start_time_ms),
-                    obj_index,
-                    int(press_index),
-                )
-            )
-    pairs.sort(key=lambda item: item[0])
-    assigned_press: dict[int, int] = {}
-    used_presses: set[int] = set()
-    for _error, obj_index, press_index in pairs:
-        if obj_index in assigned_press or press_index in used_presses:
-            continue
-        assigned_press[obj_index] = press_index
-        used_presses.add(press_index)
+    assigned_press = match_press_events(map_plan.objects, events, minimum_window_ms=180.0)
+    contexts = build_contexts(map_plan)
 
     rows = []
-    previous = None
-    for obj in map_plan.objects:
-        ghost = bool(ghost_flags[obj.index]) if obj.index < len(ghost_flags) else False
+    for object_position, obj in enumerate(map_plan.objects):
+        ghost = bool(ghost_flags[object_position]) if object_position < len(ghost_flags) else False
         if obj.kind == "spinner":
-            previous = obj
             continue
         start = obj.start_time_ms
         radius = obj.radius
         windows = obj.hit_windows
-        if previous is None:
-            distance, interval = 0.0, 1000.0
-        else:
-            distance = math.hypot(
-                obj.position.x - previous.end_position.x,
-                obj.position.y - previous.end_position.y,
-            )
-            interval = obj.start_time_ms - previous.end_time_ms
-        context = _context(obj.kind, distance, interval)
+        context = contexts[object_position].label
 
-        if obj.index not in assigned_press:
+        if object_position not in assigned_press:
             rows.append(
                 {
                     "context": context, "kind": obj.kind, "hit": False,
@@ -140,9 +88,8 @@ def analyze_run(map_plan, frames, skill, effort, ghost_flags):
                     "ghost": ghost, "attribution": "timing",
                 }
             )
-            previous = obj
             continue
-        best = assigned_press[obj.index]
+        best = assigned_press[object_position]
         press_relative_ms = float(press_times_absolute[best] - timeline_start)
         timing_error = float(press_times_absolute[best] - start)
         px, py = position_at_time(press_relative_ms)
@@ -179,7 +126,6 @@ def analyze_run(map_plan, frames, skill, effort, ghost_flags):
                 "ghost": ghost, "attribution": attribution,
             }
         )
-        previous = obj
 
     judgements = [r["judgement"] for r in rows]
     counts = {j: judgements.count(j) for j in ("300", "100", "50", "miss")}

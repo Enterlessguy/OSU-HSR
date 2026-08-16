@@ -5,6 +5,7 @@ import math
 
 import numpy as np
 
+from .context import PatternContext, build_contexts
 from .schemas import HumanProfile, MapObject, MapPlan, TraceFrame
 
 
@@ -188,6 +189,11 @@ class HumanTracePlanner:
         profile.validate()
         self.map = map_plan
         self.profile = profile
+        # Build once so every planner operation sees the same rich, shared
+        # context features.  ``_context`` below remains a label compatibility
+        # wrapper for the existing pressure/timing tables.
+        self.contexts: tuple[PatternContext, ...] = build_contexts(map_plan)
+        self.pattern_contexts = self.contexts
         self.params = interpolate_skill_parameters(profile.skill_level)
         self.rng = np.random.default_rng(profile.seed)
         self.step_ms = 1000.0 / profile.sample_rate_hz
@@ -239,6 +245,10 @@ class HumanTracePlanner:
         self.idle_wanders = 0
         self.last_aim_error = 0.0
         self.strength_samples: list[tuple[float, float]] = []
+        # Per-object planned landing offsets are retained for offline heatmap
+        # diagnostics.  They are keyed by map position so analysis can compare
+        # seeds without confusing a late/missing press with an aim sample.
+        self.landing_offsets: dict[int, tuple[float, float]] = {}
 
         self.model_bundle = None
         if model_bundle_path:
@@ -457,40 +467,12 @@ class HumanTracePlanner:
         return sorted(adjusted, key=lambda interval: interval[0])
 
     def _strain(self, index: int) -> float:
-        if index == 0:
-            return 0.0
-        current = self.map.objects[index]
-        previous = self.map.objects[index - 1]
-        delta_ms = max(16.0, current.start_time_ms - previous.end_time_ms)
-        distance = math.hypot(
-            current.position.x - previous.end_position.x,
-            current.position.y - previous.end_position.y,
-        )
-        return float(np.clip((distance / delta_ms) / 2.2, 0.0, 1.0))
+        return self.contexts[index].strain
 
     def _context(self, index: int, obj: MapObject, strain: float) -> str:
-        """Classify the pattern the object sits in (stream/burst/jump/...).
-
-        Mirrors research/human-sim/src/human_sim/dataset.py so the simulator
-        and the replay-analysis pipeline agree on what "stream" means.
-        """
-        if index == 0:
-            return "transition"
-        previous = self.map.objects[index - 1]
-        interval = obj.start_time_ms - previous.end_time_ms
-        distance = math.hypot(
-            obj.position.x - previous.end_position.x,
-            obj.position.y - previous.end_position.y,
-        )
-        if obj.kind in {"slider", "spinner"}:
-            return obj.kind
-        if interval < 130:
-            return "stream"
-        if interval < 220:
-            return "burst"
-        if distance > 120:
-            return "jump"
-        return "transition"
+        """Return the shared context label for legacy timing tables."""
+        del obj, strain
+        return self.contexts[index].label
 
     def _miss_nerf(self, strain: float, pressure: float) -> float:
         """v2.9: above 50% skill, miss probability collapses.
@@ -779,6 +761,7 @@ class HumanTracePlanner:
             self.aim_lapses += 1
 
         error = float(np.linalg.norm(offset))
+        self.landing_offsets[index] = (float(offset[0]), float(offset[1]))
         self.last_aim_error = error
         self.aim_errors.append(error)
         if error > obj.radius:
@@ -856,29 +839,7 @@ class HumanTracePlanner:
             return float(fallback)
         import pandas as pd
 
-        obj = self.map.objects[index]
-        if index:
-            previous = self.map.objects[index - 1]
-            distance = math.hypot(obj.position.x - previous.end_position.x, obj.position.y - previous.end_position.y)
-            interval = obj.start_time_ms - previous.end_time_ms
-        else:
-            distance, interval = 0.0, 1000.0
-        strain = min(1.0, distance / max(16.0, interval) / 2.2)
-        if obj.kind in {"slider", "spinner"}:
-            context = obj.kind
-        elif interval < 130:
-            context = "stream"
-        elif interval < 220:
-            context = "burst"
-        elif distance > 120:
-            context = "jump"
-        else:
-            context = "transition"
-        features = pd.DataFrame(
-            [{"distance": distance, "interval_ms": interval, "strain": strain, "clock_rate": self.map.clock_rate,
-              "hidden": "HD" in self.map.mods,
-              "context": context, "object_kind": obj.kind}]
-        )
+        features = pd.DataFrame([self.contexts[index].as_feature_dict()])
         q10, q50, q90 = (float(models[str(q)].predict(features)[0]) for q in (0.1, 0.5, 0.9))
         u = self.rng.random()
         if u < 0.5:

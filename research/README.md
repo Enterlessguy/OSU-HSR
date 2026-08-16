@@ -92,5 +92,11 @@ For headless latency benchmarks the runner accepts test-only flags
 temporary harness, synthetic trace, and captured results live under
 `timing-tests/`.
 
+Every runner log now ends with a machine-readable `Runtime telemetry` record
+in addition to the human-readable latency summary. Use
+`human-sim runtime-quality <log>` to classify dispatch, SendInput, coalescing,
+focus/window, and heartbeat integrity. Offline planner benchmarks without a
+log are intentionally reported as `planner-only/not-runtime-validated`.
+
 See [human-sim/README.md](human-sim/README.md) for the data workflow and
 [SECURITY_BOUNDARY.md](SECURITY_BOUNDARY.md) for the enforced isolation rules.

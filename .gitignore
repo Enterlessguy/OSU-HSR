@@ -356,6 +356,7 @@ FodyWeavers.xsd
 !/research/human-sim/output/analysis/
 /research/human-sim/output/analysis/*
 !/research/human-sim/output/analysis/phase2_analyze.py
+!/research/human-sim/output/analysis/statistical-regression.md
 /research/human-sim/**/*.pyc
 /research/human-sim/**/__pycache__/
 /research/human-sim/.pytest_cache/
