@@ -147,6 +147,7 @@ def _benchmark(args: argparse.Namespace) -> int:
         skill=args.skill,
         effort=args.effort,
         sample_rate_hz=args.sample_rate,
+        monotonicity_seeds=_parse_seeds(args.monotonicity_seeds) if args.monotonicity_seeds else None,
         classification=classification,
         runtime_quality=quality,
     )
@@ -323,6 +324,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--scope", choices=("compact", "default", "full"), default="compact")
     benchmark.add_argument("--map", dest="map_paths", action="append", help="Explicit map plan; repeat for multiple maps")
     benchmark.add_argument("--seeds", default=",".join(str(seed) for seed in (42, 43, 44, 45, 46)))
+    benchmark.add_argument("--monotonicity-seeds", help="Optional seed list for multi-map skill/effort checks; defaults to the first three benchmark seeds")
     benchmark.add_argument("--skill", type=float, default=50.0)
     benchmark.add_argument("--effort", type=float, default=80.0)
     benchmark.add_argument("--sample-rate", type=int, default=500)

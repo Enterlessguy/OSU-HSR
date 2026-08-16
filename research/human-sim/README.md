@@ -93,16 +93,22 @@ comma-separated deterministic seed list. The JSON report and text summary
 include exact same-seed reproducibility, one-to-one object/press coverage,
 cross-seed landing delta/correlation, lag-2..8 periodicity, normalized landing
 radius (mean/p95/rim share), angular entropy, successful landings, timing
-distribution, cursor velocity/acceleration/jerk, and skill/effort monotonicity.
+distribution, cursor velocity/acceleration/jerk, structured context-label
+shares, and skill/effort monotonicity.
 
 The broad default gates are artifact detectors rather than snapshot targets:
-absolute cross-seed correlation <= 0.60 when every seed pair has at least 32
-common object samples, lag correlation <= 0.65, rim share <= 0.20, and normalized angular
+absolute cross-seed correlation <= 0.35 when every seed pair has at least 32
+common object samples, lag correlation <= 0.35, rim share <= 0.20, and normalized angular
 entropy >= 0.60 when at least 32 samples are available. The benchmark's primary
 `radial` values describe planned landing
 offsets for correctly matched presses; `press_radial` is retained separately
 to expose cursor/timing contamination. Normal stochastic variation should not
 be handled by tightening these limits.
+
+Skill and effort monotonicity runs cover every selected map and the first three
+benchmark seeds by default. Paired profile changes are aggregated across seeds;
+only consistent inversions fail the gate. Use `--monotonicity-seeds` to choose a
+different seed subset.
 
 The benchmark is classified as
 `planner-only/not-runtime-validated` when no runner telemetry is supplied.
@@ -130,7 +136,7 @@ human-sim runtime-quality output/auto-run-YYYYMMDD-HHMMSS.log
 ```
 
 Default thresholds are dispatch p95 1 ms, dispatch p99 5 ms, dispatch max
-250 ms, key-down p95 2.5 ms, `SendInput` p95 2.5 ms, `SendInput` max 100 ms,
+100 ms, key-down p95 2.5 ms, `SendInput` p95 2.5 ms, `SendInput` max 100 ms,
 deadline coalescing <= 2% of delivered frames, and heartbeat gaps <= 2 s.
 Override individual values with the corresponding `--max-*`,
 `--max-coalesced-fraction`, or `--max-heartbeat-gap-ms` options. A run is

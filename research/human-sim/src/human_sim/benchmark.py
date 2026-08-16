@@ -25,7 +25,6 @@ MONOTONICITY_PROFILES = (
     (50.0, 80.0),
     (70.0, 80.0),
     (50.0, 40.0),
-    (50.0, 80.0),
     (50.0, 100.0),
 )
 
@@ -34,8 +33,8 @@ MONOTONICITY_PROFILES = (
 class BenchmarkGates:
     """Broad artifact gates; stochastic distributions are not snapshots."""
 
-    max_cross_seed_abs_correlation: float = 0.60
-    max_lag_abs_correlation: float = 0.65
+    max_cross_seed_abs_correlation: float = 0.35
+    max_lag_abs_correlation: float = 0.35
     max_rim_share: float = 0.20
     min_angular_entropy: float = 0.60
     entropy_min_samples: int = 32
@@ -90,33 +89,55 @@ def _summary(values: Sequence[float] | np.ndarray) -> dict[str, float | int]:
     }
 
 
-def _kinematic_summary(frames: Sequence[TraceFrame]) -> dict[str, dict[str, float | int]]:
+def _kinematic_summary(frames: Sequence[TraceFrame], sample_rate_hz: int = 500) -> dict[str, Any]:
+    """Summarize motion after resampling onto the configured cursor cadence.
+
+    Planner traces contain exact event frames between ordinary sample ticks.
+    Differentiating those variable intervals directly turns a legitimate
+    position correction into a huge, sample-spacing-dependent jerk.  The
+    interpolation below makes the derivative statistics comparable across
+    maps and seeds while retaining the original trace for all other metrics.
+    """
+    empty = _summary([])
+    if len(frames) < 2 or sample_rate_hz <= 0:
+        return {
+            "sampling_rate_hz": sample_rate_hz,
+            "source_frames": len(frames),
+            "resampled_frames": 0,
+            "velocity_px_s": empty,
+            "acceleration_px_s2": empty,
+            "jerk_px_s3": empty,
+        }
+
     times = np.asarray([frame.time_us for frame in frames], dtype=float) / 1_000_000.0
     positions = np.asarray([[frame.x, frame.y] for frame in frames], dtype=float)
-    if len(frames) < 2:
-        empty = _summary([])
-        return {"velocity_px_s": empty, "acceleration_px_s2": empty, "jerk_px_s3": empty}
-    dt = np.diff(times)
-    valid = dt > 0
-    if not np.any(valid):
-        empty = _summary([])
-        return {"velocity_px_s": empty, "acceleration_px_s2": empty, "jerk_px_s3": empty}
-    velocity = np.diff(positions, axis=0)[valid] / dt[valid, None]
-    speed = np.linalg.norm(velocity, axis=1)
-    if len(velocity) < 2:
-        acceleration = np.empty((0, 2))
-    else:
-        velocity_dt = np.diff(times)[valid]
-        acceleration = np.diff(velocity, axis=0) / np.maximum(velocity_dt[1:, None], 1e-9)
-    acceleration_norm = np.linalg.norm(acceleration, axis=1)
-    if len(acceleration) < 2:
-        jerk = np.empty((0, 2))
-    else:
-        jerk_dt = np.diff(times)[valid][2:]
-        jerk = np.diff(acceleration, axis=0) / np.maximum(jerk_dt[:, None], 1e-9)
+    strictly_increasing = np.concatenate(([True], np.diff(times) > 0.0))
+    times = times[strictly_increasing]
+    positions = positions[strictly_increasing]
+    step_s = 1.0 / float(sample_rate_hz)
+    if len(times) < 2 or times[-1] - times[0] < step_s:
+        return {
+            "sampling_rate_hz": sample_rate_hz,
+            "source_frames": len(frames),
+            "resampled_frames": 0,
+            "velocity_px_s": empty,
+            "acceleration_px_s2": empty,
+            "jerk_px_s3": empty,
+        }
+
+    uniform_times = np.arange(times[0], times[-1] + step_s * 0.5, step_s)
+    uniform_positions = np.column_stack(
+        [np.interp(uniform_times, times, positions[:, axis]) for axis in range(positions.shape[1])]
+    )
+    velocity = np.diff(uniform_positions, axis=0) / step_s
+    acceleration = np.diff(velocity, axis=0) / step_s if len(velocity) >= 2 else np.empty((0, 2))
+    jerk = np.diff(acceleration, axis=0) / step_s if len(acceleration) >= 2 else np.empty((0, 2))
     return {
-        "velocity_px_s": _summary(speed),
-        "acceleration_px_s2": _summary(acceleration_norm),
+        "sampling_rate_hz": sample_rate_hz,
+        "source_frames": len(frames),
+        "resampled_frames": len(uniform_times),
+        "velocity_px_s": _summary(np.linalg.norm(velocity, axis=1)),
+        "acceleration_px_s2": _summary(np.linalg.norm(acceleration, axis=1)),
         "jerk_px_s3": _summary(np.linalg.norm(jerk, axis=1)),
     }
 
@@ -206,6 +227,13 @@ def _run_metrics(
 
     radial_array = np.asarray(radial, dtype=float)
     timing_array = np.asarray(timing, dtype=float)
+    context_counts: dict[str, int] = {}
+    for context in contexts:
+        if context.object_kind == "spinner":
+            continue
+        context_counts[context.label] = context_counts.get(context.label, 0) + 1
+    context_total = max(1, sum(context_counts.values()))
+    context_shares = {label: round(count / context_total, 6) for label, count in context_counts.items()}
     lag_correlations: dict[str, float] = {}
     for lag in range(2, 9):
         if len(radial_array) > lag:
@@ -241,7 +269,11 @@ def _run_metrics(
             "early_share": round(float(np.mean(timing_array < 0.0)), 6) if len(timing_array) else 0.0,
             "samples": int(len(timing_array)),
         },
-        "kinematics": _kinematic_summary(frames),
+        "context_distribution": {"counts": context_counts, "shares": context_shares},
+        "kinematics": _kinematic_summary(
+            frames,
+            sample_rate_hz=planner.profile.sample_rate_hz if planner is not None else 500,
+        ),
         "rows": rows,
     }
 
@@ -289,6 +321,7 @@ def _aggregate_run_metrics(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
     timing = [record["metrics"]["timing"]["p95_abs_ms"] for record in records]
     rim = [record["metrics"]["radial"]["rim_share_gt_0_8"] for record in records]
     entropy = [record["metrics"]["angular_entropy"] for record in records]
+    jump_share = [record["metrics"]["context_distribution"]["shares"].get("jump", 0.0) for record in records]
     success = [
         record["metrics"]["successful_landings"] / max(1, record["metrics"]["judged_objects"])
         for record in records
@@ -304,6 +337,7 @@ def _aggregate_run_metrics(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "timing_p95_abs_ms": _summary(timing),
         "rim_share_gt_0_8": _summary(rim),
         "angular_entropy": _summary(entropy),
+        "context_jump_share": _summary(jump_share),
         "angular_sample_count": int(sum(record["metrics"]["angular_samples"] for record in records)),
         "success_rate": _summary(success),
         "lag_abs_correlation_max": round(float(max(lag_values)), 6) if lag_values else 0.0,
@@ -318,6 +352,7 @@ def _profile_rows(records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
         rows.append(
             {
                 "map": record["map"],
+                "seed": record["seed"],
                 "skill": record["skill"],
                 "effort": record["effort"],
                 "success_rate": metrics["successful_landings"] / max(1, metrics["judged_objects"]),
@@ -329,33 +364,79 @@ def _profile_rows(records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _monotonicity(rows: Sequence[dict[str, Any]], axis: str) -> dict[str, Any]:
+    """Compare profile levels after aggregating paired multi-seed runs."""
     comparisons: list[dict[str, Any]] = []
-    groups: dict[tuple[float, ...], list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, float], dict[float, list[dict[str, Any]]]] = {}
     for row in rows:
-        key = (row["map"], row["effort"]) if axis == "skill" else (row["map"], row["skill"])
-        groups.setdefault(key, []).append(row)
-    for key, group in groups.items():
-        by_axis_value: dict[float, dict[str, Any]] = {}
-        for row in sorted(group, key=lambda row: row[axis]):
-            by_axis_value.setdefault(float(row[axis]), row)
-        ordered = [by_axis_value[value] for value in sorted(by_axis_value)]
-        for left, right in zip(ordered, ordered[1:]):
-            success_delta = right["success_rate"] - left["success_rate"]
-            radial_ratio = right["radial_mean"] / max(left["radial_mean"], 1e-9)
-            timing_ratio = right["timing_p95_abs_ms"] / max(left["timing_p95_abs_ms"], 1e-9)
-            expected_improvement = success_delta >= -0.12 and radial_ratio <= 1.35 and timing_ratio <= 1.35
+        fixed_value = float(row["effort"] if axis == "skill" else row["skill"])
+        axis_value = float(row[axis])
+        groups.setdefault((row["map"], fixed_value), {}).setdefault(axis_value, []).append(row)
+
+    def aggregate(observations: Sequence[dict[str, Any]]) -> dict[str, float]:
+        count = max(1, len(observations))
+        return {
+            "success_rate": sum(row["success_rate"] for row in observations) / count,
+            "radial_mean": sum(row["radial_mean"] for row in observations) / count,
+            "timing_p95_abs_ms": sum(row["timing_p95_abs_ms"] for row in observations) / count,
+        }
+
+    def by_seed(observations: Sequence[dict[str, Any]]) -> dict[Any, dict[str, float]]:
+        grouped: dict[Any, list[dict[str, Any]]] = {}
+        for observation in observations:
+            grouped.setdefault(observation.get("seed", 0), []).append(observation)
+        return {seed: aggregate(seed_rows) for seed, seed_rows in grouped.items()}
+
+    def comparison_metrics(left: dict[str, float], right: dict[str, float]) -> tuple[float, float, float, bool]:
+        success_delta = right["success_rate"] - left["success_rate"]
+        radial_ratio = right["radial_mean"] / max(left["radial_mean"], 1e-9)
+        timing_ratio = right["timing_p95_abs_ms"] / max(left["timing_p95_abs_ms"], 1e-9)
+        # Timing is noisier than the aim distribution; success and radial
+        # error remain the stronger signals for a consistent regression.
+        expected_improvement = success_delta >= -0.12 and radial_ratio <= 1.35 and timing_ratio <= 1.60
+        return success_delta, radial_ratio, timing_ratio, expected_improvement
+
+    for (map_name, fixed_value), values in groups.items():
+        ordered_values = sorted(values)
+        for left_value, right_value in zip(ordered_values, ordered_values[1:]):
+            left = aggregate(values[left_value])
+            right = aggregate(values[right_value])
+            success_delta, radial_ratio, timing_ratio, aggregate_pass = comparison_metrics(left, right)
+            left_by_seed = by_seed(values[left_value])
+            right_by_seed = by_seed(values[right_value])
+            common_seeds = sorted(set(left_by_seed) & set(right_by_seed), key=str)
+            seed_failures = 0
+            for seed in common_seeds:
+                if not comparison_metrics(left_by_seed[seed], right_by_seed[seed])[3]:
+                    seed_failures += 1
+            seed_limit = max(1, len(common_seeds) // 3)
+            passed = aggregate_pass and seed_failures <= seed_limit
+            consistent_failure = not passed and (
+                seed_failures > len(common_seeds) / 2.0 if common_seeds else not aggregate_pass
+            )
             comparisons.append(
                 {
-                    "from": left[axis],
-                    "to": right[axis],
+                    "map": map_name,
+                    "fixed_" + ("effort" if axis == "skill" else "skill"): fixed_value,
+                    "from": left_value,
+                    "to": right_value,
                     "success_delta": round(success_delta, 6),
                     "radial_ratio": round(radial_ratio, 6),
                     "timing_ratio": round(timing_ratio, 6),
-                    "pass": expected_improvement,
+                    "seed_count": len(common_seeds),
+                    "seed_failures": seed_failures,
+                    "consistent_failure": consistent_failure,
+                    "pass": passed,
                 }
             )
     failures = sum(not comparison["pass"] for comparison in comparisons)
-    return {"axis": axis, "comparisons": comparisons, "failures": failures, "pass": failures <= max(1, len(comparisons) // 3)}
+    consistent_failures = sum(comparison["consistent_failure"] for comparison in comparisons)
+    return {
+        "axis": axis,
+        "comparisons": comparisons,
+        "failures": failures,
+        "consistent_failures": consistent_failures,
+        "pass": consistent_failures == 0,
+    }
 
 
 def _gate_report(
@@ -403,8 +484,20 @@ def _gate_report(
     )
     total_success = sum(report["aggregate"]["successful_landings_total"] for report in map_reports)
     add("successful_landings", total_success >= gates.min_successful_landings, total_success, gates.min_successful_landings, "benchmark must produce at least one judged landing")
-    add("skill_monotonicity", profile_report["skill"]["pass"], profile_report["skill"]["failures"], "<= one-third failures", "higher skill should not broadly worsen error or success")
-    add("effort_monotonicity", profile_report["effort"]["pass"], profile_report["effort"]["failures"], "<= one-third failures", "higher effort should not broadly worsen error or success")
+    add(
+        "skill_monotonicity",
+        profile_report["skill"]["pass"],
+        profile_report["skill"]["consistent_failures"],
+        0,
+        "higher skill should not consistently worsen error or success across selected maps and seeds",
+    )
+    add(
+        "effort_monotonicity",
+        profile_report["effort"]["pass"],
+        profile_report["effort"]["consistent_failures"],
+        0,
+        "higher effort should not consistently worsen error or success across selected maps and seeds",
+    )
     return {"pass": all(check["pass"] for check in checks), "checks": checks}
 
 
@@ -417,6 +510,7 @@ def run_benchmark(
     effort: float = DEFAULT_PROFILE[1],
     sample_rate_hz: int = 500,
     monotonicity_profiles: Sequence[tuple[float, float]] = MONOTONICITY_PROFILES,
+    monotonicity_seeds: Sequence[int] | None = None,
     gates: BenchmarkGates | None = None,
     classification: str = "planner-only/not-runtime-validated",
     runtime_quality: dict[str, Any] | None = None,
@@ -430,6 +524,13 @@ def run_benchmark(
     seed_values = tuple(int(seed) for seed in seeds)
     if not seed_values:
         raise ValueError("at least one benchmark seed is required")
+    monotonicity_seed_values = (
+        tuple(int(seed) for seed in monotonicity_seeds)
+        if monotonicity_seeds is not None
+        else seed_values[: min(3, len(seed_values))]
+    )
+    if not monotonicity_seed_values:
+        raise ValueError("at least one monotonicity seed is required")
     gates = gates or BenchmarkGates()
 
     map_reports: list[dict[str, Any]] = []
@@ -469,24 +570,31 @@ def run_benchmark(
         )
 
     monotonicity_records: list[dict[str, Any]] = []
-    monotonicity_seed = seed_values[0]
-    for map_path in selected_paths[:1]:
+    for map_path in selected_paths:
         plan = load_map_plan(map_path)
         map_name = map_path.stem.removesuffix(".map.ndjson")
-        for profile_skill, profile_effort in monotonicity_profiles:
-            profile = HumanProfile(99.5, monotonicity_seed, sample_rate_hz, skill_level=float(profile_skill), effort_level=float(profile_effort))
-            planner = HumanTracePlanner(plan, profile)
-            frames = planner.generate()
-            monotonicity_records.append(
-                {
-                    "map": map_name,
-                    "skill": float(profile_skill),
-                    "effort": float(profile_effort),
-                    "metrics": _run_metrics(plan, frames, planner),
-                }
-            )
+        for monotonicity_seed in monotonicity_seed_values:
+            for profile_skill, profile_effort in monotonicity_profiles:
+                profile = HumanProfile(99.5, monotonicity_seed, sample_rate_hz, skill_level=float(profile_skill), effort_level=float(profile_effort))
+                planner = HumanTracePlanner(plan, profile)
+                frames = planner.generate()
+                monotonicity_records.append(
+                    {
+                        "map": map_name,
+                        "seed": monotonicity_seed,
+                        "skill": float(profile_skill),
+                        "effort": float(profile_effort),
+                        "metrics": _run_metrics(plan, frames, planner),
+                    }
+                )
     profile_rows = _profile_rows(monotonicity_records)
-    profile_report = {"skill": _monotonicity(profile_rows[:], "skill"), "effort": _monotonicity(profile_rows[:], "effort"), "rows": profile_rows}
+    profile_report = {
+        "skill": _monotonicity(profile_rows[:], "skill"),
+        "effort": _monotonicity(profile_rows[:], "effort"),
+        "maps": [path.stem.removesuffix(".map.ndjson") for path in selected_paths],
+        "seeds": list(monotonicity_seed_values),
+        "rows": profile_rows,
+    }
     same_seed = all(result["exact"] for result in same_seed_results)
     gate_report = _gate_report(same_seed=same_seed, map_reports=map_reports, profile_report=profile_report, gates=gates)
     return {
@@ -499,6 +607,7 @@ def run_benchmark(
         "configuration": {
             "maps": [str(path) for path in selected_paths],
             "seeds": list(seed_values),
+            "monotonicity_seeds": list(monotonicity_seed_values),
             "skill": float(skill),
             "effort": float(effort),
             "sample_rate_hz": sample_rate_hz,
@@ -526,6 +635,7 @@ def format_summary(report: dict[str, Any]) -> str:
             f"radial_mean={aggregate['radial_mean']['mean']:.3f} "
             f"rim={aggregate['rim_share_gt_0_8']['mean']:.3f} "
             f"entropy={aggregate['angular_entropy']['mean']:.3f} "
+            f"jump_share={aggregate['context_jump_share']['mean']:.3f} "
             f"timing_p95={aggregate['timing_p95_abs_ms']['mean']:.2f}ms "
             f"cross_seed_abs_corr_max={cross_value}"
         )

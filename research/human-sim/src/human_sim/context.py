@@ -185,6 +185,7 @@ def _classify(
     index: int,
     interval_ms: float,
     distance: float,
+    radius: float,
     direction_change_angle_rad: float,
     rhythm_continuation: float,
 ) -> str:
@@ -193,14 +194,22 @@ def _classify(
     if index == 0:
         return "transition"
 
-    # Dense long jumps and sharp angle changes are deliberately handled before
-    # the interval thresholds.  This is the key distinction from the old
-    # interval-first classifier, which labelled almost every dense pattern a
-    # stream even when the cursor had to reverse or cross the playfield.
-    large_jump = distance > 120.0
-    sharp_turn = math.degrees(direction_change_angle_rad) >= 60.0
+    # A jump needs both meaningful geometry and urgency.  Distance alone
+    # labels regular, moderate-speed patterns such as a 150 px / 214 ms
+    # alternating map as jumps, while angle alone labels compact reversals as
+    # jumps.  Normalized distance and approach velocity keep the classifier
+    # interpretable without making every 60-degree turn a new pattern family.
+    distance_over_radius = distance / max(radius, 1e-6)
     rhythm_break = rhythm_continuation < 0.45
-    if large_jump or sharp_turn:
+    urgent_move = (distance / max(16.0, interval_ms) * 1000.0) >= 900.0 or rhythm_break
+    large_jump = distance > max(120.0, radius * 3.5) and urgent_move
+    meaningful_turn = (
+        math.degrees(direction_change_angle_rad) >= 60.0
+        and distance >= max(80.0, radius * 2.5)
+        and distance_over_radius >= 3.0
+        and urgent_move
+    )
+    if large_jump or meaningful_turn:
         return "jump"
     if interval_ms < 130.0:
         return "burst" if rhythm_break else "stream"
@@ -292,6 +301,7 @@ def build_contexts(plan: MapPlan, *, density_window_ms: float = 600.0) -> tuple[
             index=index,
             interval_ms=interval,
             distance=distance,
+            radius=radius,
             direction_change_angle_rad=direction_change,
             rhythm_continuation=rhythm_continuation,
         )

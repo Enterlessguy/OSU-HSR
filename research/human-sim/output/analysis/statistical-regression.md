@@ -28,8 +28,10 @@ It records:
   rim share (`normalized radius > 0.8`);
 - normalized angular entropy, cross-seed per-object absolute correlation and
   landing deltas, and lag-2..8 periodicity;
+- structured context-label counts and shares for calibration review;
 - successful landing count/rate and signed/absolute timing distribution;
-- velocity, acceleration, and jerk summaries from the trace;
+- velocity, acceleration, and jerk summaries after resampling to the configured
+  cursor cadence;
 - skill and effort monotonicity comparisons with broad tolerances.
 
 The primary radial/angle fields and cross-seed landing deltas use the planner's
@@ -45,15 +47,16 @@ The default artifact gates are deliberately broad:
 | check | default gate |
 |---|---:|
 | same-seed trace | exact |
-| cross-seed absolute correlation (>= 32 common samples per seed pair) | <= 0.60 |
-| lag-2..8 absolute correlation | <= 0.65 |
+| cross-seed absolute correlation (>= 32 common samples per seed pair) | <= 0.35 |
+| lag-2..8 absolute correlation | <= 0.35 |
 | rim share | <= 0.20 |
 | angular entropy | >= 0.60 when >= 32 angular samples |
 | successful landings | >= 1 across the report |
 
-Skill and effort comparisons allow small stochastic reversals and fail only
-when more than one-third of comparisons are clearly reversed. These limits
-are regression alarms, not claims about a population-level human distribution.
+Skill and effort comparisons aggregate paired results across every selected map
+and the first three benchmark seeds. Small stochastic reversals are tolerated
+per pair, but a consistent multi-seed inversion fails the gate. These limits are
+regression alarms, not claims about a population-level human distribution.
 
 ## Runtime evidence
 

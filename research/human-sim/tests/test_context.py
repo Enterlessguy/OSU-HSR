@@ -73,6 +73,23 @@ def test_context_features_handle_first_history_and_optional_metadata():
     assert alias_context.map_drain_rate == 6.0
     assert alias_context.map_object_count == 6
 
+    compact_reversal = MapPlan(
+        schema_version=1,
+        beatmap_sha256="1" * 64,
+        beatmap_md5="2" * 32,
+        clock_rate=1.0,
+        mods=(),
+        objects=(
+            _object(0, "circle", 1000, 200, 200),
+            _object(1, "circle", 1080, 260, 200),
+            _object(2, "circle", 1160, 200, 200),
+        ),
+        metadata={},
+    )
+    compact_contexts = build_contexts(compact_reversal)
+    assert compact_contexts[2].direction_change_angle_deg >= 170.0
+    assert compact_contexts[2].label == "stream"
+
 
 def test_missing_metadata_is_backward_compatible_and_planner_reuses_contexts():
     plan = _plan()

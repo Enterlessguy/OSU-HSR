@@ -15,7 +15,7 @@ class RuntimeQualityConfig:
 
     max_dispatch_p95_us: float = 1_000.0
     max_dispatch_p99_us: float = 5_000.0
-    max_dispatch_max_us: float = 250_000.0
+    max_dispatch_max_us: float = 100_000.0
     max_key_down_p95_us: float = 2_500.0
     max_send_input_p95_us: float = 2_500.0
     max_send_input_max_us: float = 100_000.0
