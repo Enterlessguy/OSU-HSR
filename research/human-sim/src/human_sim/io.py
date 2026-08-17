@@ -4,11 +4,30 @@ import gzip
 import hashlib
 import io
 import json
+import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable
 
 from .schemas import MapPlan, TraceFrame
+
+
+def repository_git_commit(repository_root: str | Path | None = None) -> str:
+    """Return the checked-out commit used to produce a trace, if available."""
+    root = Path(repository_root) if repository_root else Path(__file__).resolve().parents[4]
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    commit = result.stdout.strip()
+    return commit if commit else "unknown"
 
 
 @contextmanager
@@ -46,7 +65,16 @@ def write_trace(
     frames: Iterable[TraceFrame],
     model_sha256: str | None = None,
     diagnostic_perfect: bool = False,
+    planner_version: str | None = None,
+    git_commit: str | None = None,
+    build_identity: str | None = None,
 ) -> str:
+    if planner_version is None:
+        from .planner import PLANNER_VERSION
+
+        planner_version = PLANNER_VERSION
+    git_commit = git_commit or repository_git_commit()
+    build_identity = build_identity or f"human-sim-python:{planner_version}:{git_commit}"
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with _open_text(destination, "w") as stream:
@@ -67,6 +95,9 @@ def write_trace(
             "synthetic": True,
             "diagnostic_perfect": diagnostic_perfect,
             "model_sha256": model_sha256 or "built_in_baseline_v1",
+            "planner_version": planner_version,
+            "git_commit": git_commit,
+            "build_identity": build_identity,
         }
         encoded = json.dumps(header, separators=(",", ":"), sort_keys=True) + "\n"
         stream.write(encoded)

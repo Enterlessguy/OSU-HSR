@@ -11,7 +11,7 @@ from .schemas import HumanProfile, MapObject, MapPlan, TraceFrame
 
 # Bump when trace-generation behaviour changes so the runner's content-addressed
 # trace cache is invalidated (the configuration hash includes this string).
-PLANNER_VERSION = "timing-sync-v2.12"
+PLANNER_VERSION = "timing-sync-v2.13"
 
 
 @dataclass(frozen=True)
@@ -246,6 +246,10 @@ class HumanTracePlanner:
         self.timing_state = 0.0
         self.aim_state = np.zeros(2)
         self.aim_bias_state = 0.0
+        # A small session-level covariance orientation perturbation prevents
+        # every run from using exactly the same local error ellipse while the
+        # local-frame sampler below remains directionally neutral.
+        self.aim_rho_state = 0.0 if profile.perfect_baseline else float(np.clip(self.rng.normal(0.0, 0.035), -0.10, 0.10))
         # v1.5 continuous-motion states: a slow absolute drift and a persistent
         # curve direction. Unlike per-transition random draws, these evolve
         # smoothly across the whole run so adjacent moves keep one continuous
@@ -898,17 +902,17 @@ class HumanTracePlanner:
         return np.array([np.clip(result[0], margin, 512 - margin), np.clip(result[1], margin, 384 - margin)])
 
     def _aim_offset(self, index: int, obj: MapObject, strain: float, context: str) -> np.ndarray:
-        """v2.5 aim landing: centre-anchored, undershoot-biased, speed-coupled.
+        """Sample a centre-anchored local-frame landing distribution.
 
-        There is no persistent habit/octant pattern. Real players aim for the
-        middle of the circle and slightly favour undershooting (landing short
-        of the target) over overshooting. The landing is therefore an
-        elliptical Gaussian anchored just short of the centre along the
-        approach axis: overwhelming probability in a rough neighbourhood of
-        the centre, the entry-side "beginning" and the middle most likely, the
-        far side and the edges unlikely. The spread still grows with speed,
-        strain, effort and fatigue, so hard maps at low skill keep their
-        natural misses while a 90%+ run has huge margin inside the circle.
+        ``u`` is the error along the approach direction and ``v`` is its
+        perpendicular error.  Sampling these coordinates directly is
+        important: drawing a narrow angle and then making the lateral size a
+        fraction of a radial error creates a triangular approach-aligned
+        wedge, even when the screen-space aggregate looks harmless.  The
+        mixture below is a mildly undershoot-biased bivariate normal with a
+        small pressure-dependent tail.  Its covariance stays close to an
+        ellipse, and all persistent bias is bounded and session-level rather
+        than tied to one map direction.
         """
         if index:
             previous = self.map.objects[index - 1]
@@ -917,7 +921,8 @@ class HumanTracePlanner:
         else:
             dx, dy = obj.position.x - 256.0, obj.position.y - 192.0
         distance = math.hypot(dx, dy)
-        approach_angle = math.atan2(dy, dx)
+        approach = np.array([dx, dy], dtype=float) / max(distance, 1e-9)
+        normal = np.array([-approach[1], approach[0]], dtype=float)
 
         # How hard this move has to be: Fitts natural pace vs the skill speed
         # ceiling. Fast moves (long jumps at low skill) inflate the spread.
@@ -961,75 +966,84 @@ class HumanTracePlanner:
             * (1.0 + (0.12 * self.pressure + 0.06 * self.stress_episode) * skill_gain)
         )
 
-        # Landing angle is tight around the approach axis (sides unlikely);
-        # a small uniform-direction chance remains at low effort / high speed
-        # (the "effort = consistency" clause), kept small so edges stay rare.
-        # v2.8: tighter angular cone so the aggregate cloud stays visibly
-        # elongated along the travel direction instead of rounding out.
-        # v2.11: irregular per-object landing shapes. Every object draws its
-        # own ellipse parameters (undershoot depth, elongation, angular
-        # scatter, and a two-cluster mixture), so the aggregate cloud is a
-        # ragged scatter biased toward undershoot instead of one clean
-        # synthetic "arrow". The radial boundary is soft and per-object, so
-        # the heatmap never shows a hard ring or a consistent outline.
-        angular_sigma_rad = math.radians(
-            self.rng.uniform(8.0, 26.0) + 20.0 * (1.0 - self.skill) + 12.0 * speed_ratio
-        )
-        angle = approach_angle + self.rng.normal(0.0, angular_sigma_rad)
-        # Small scatter-direction chance (effort = consistency), biased toward
-        # the approach side so it never draws a full 360-degree ring.
-        uniform_probability = float(np.clip(0.04 + 0.10 * speed_ratio + 0.06 * (1.0 - self.effort), 0.0, 0.30))
-        if self.rng.random() < uniform_probability:
-            angle = approach_angle + self.rng.uniform(-math.pi * 0.75, math.pi * 0.75)
-
-        # Per-object undershoot depth and elongation: the aggregate is a
-        # mixture of differently-shaped ellipses, so consecutive runs never
-        # trace the same outline. A persistent signed bias state still makes
-        # landings drift in runs (temporal correlation) without pinning one
-        # geometric shape.
-        undershoot = (
-            obj.radius
-            * self.rng.uniform(0.10, 0.28)
-            * (1.35 - 0.60 * self.skill)
-            * (1.0 + 0.35 * speed_ratio)
-        )
-        self.aim_bias_state = 0.92 * self.aim_bias_state + self.rng.normal(0.0, 0.18 * sigma)
-        perpendicular_factor = self.rng.uniform(0.25, 0.65)
-        # Two-cluster mixture: a tight undershoot cluster (most landings) plus
-        # a looser scattered cluster, with per-object mixture probability. This
-        # creates lumps and asymmetry instead of a smooth analytic cloud.
-        cluster_probability = self.rng.uniform(0.55, 0.85)
-        if self.rng.random() < cluster_probability:
-            radial = self.rng.normal(-undershoot - self.aim_bias_state, sigma * self.rng.uniform(0.70, 1.00))
-        else:
-            radial = self.rng.normal(
-                -undershoot * self.rng.uniform(0.1, 0.6) - self.aim_bias_state,
-                sigma * self.rng.uniform(1.15, 1.60),
+        # Convert the existing pixel spread into two nearly comparable local
+        # standard deviations.  The longitudinal axis is only modestly wider
+        # than the lateral one; unlike the old cone, lateral error does not
+        # collapse as longitudinal error approaches zero.
+        sigma_parallel = sigma * (0.94 + 0.08 * speed_ratio)
+        sigma_perpendicular = sigma * (0.82 + 0.10 * self.effort + 0.04 * (1.0 - self.skill))
+        sigma_perpendicular = min(sigma_parallel * 0.98, sigma_perpendicular)
+        sigma_perpendicular = max(sigma_parallel * 0.70, sigma_perpendicular)
+        covariance_rho = float(
+            np.clip(
+                self.aim_rho_state + self.rng.normal(0.0, 0.018) + 0.025 * (self.pressure - 0.5),
+                -0.16,
+                0.16,
             )
-        perpendicular = self.rng.normal(0.0, sigma * perpendicular_factor)
-        cos_a, sin_a = math.cos(angle), math.sin(angle)
-        offset = radial * np.array([cos_a, sin_a]) + perpendicular * np.array([-sin_a, cos_a])
+        )
 
-        # Weak correlated 2D wander keeps consecutive landings related without
-        # a fixed pattern; kept light so the undershoot bias stays visible.
-        self.aim_state = 0.55 * self.aim_state + self.rng.normal(0.0, 0.30 * sigma, 2)
-        offset = offset + 0.15 * self.aim_state
+        # Keep the mean shift mild.  At the reference skill/effort this is
+        # roughly 0.06-0.08 radii, which produces a visible but not dominant
+        # undershoot preference once the symmetric core and tail are pooled.
+        mean_parallel = obj.radius * float(
+            np.clip(
+                0.045
+                + 0.020 * (1.0 - self.skill)
+                + 0.010 * speed_ratio
+                + 0.012 * strain
+                + 0.008 * (1.0 - self.effort),
+                0.03,
+                0.14,
+            )
+        )
+        tail_probability = float(
+            np.clip(
+                0.032
+                + 0.020 * (1.0 - self.effort)
+                + 0.018 * strain
+                + 0.016 * self.pressure,
+                0.025,
+                0.10,
+            )
+        )
+        tail_scale = float(np.clip(1.95 + 0.45 * (1.0 - self.effort) + 0.25 * strain, 1.8, 2.8))
+        if self.rng.random() < tail_probability:
+            local_sigma_parallel = sigma_parallel * tail_scale
+            local_sigma_perpendicular = sigma_perpendicular * tail_scale
+            local_mean_parallel = mean_parallel * (1.20 + 0.20 * self.rng.random())
+        else:
+            local_sigma_parallel = sigma_parallel
+            local_sigma_perpendicular = sigma_perpendicular
+            local_mean_parallel = mean_parallel
+        normal_draws = self.rng.normal(0.0, 1.0, 2)
+        local_parallel = -local_mean_parallel + local_sigma_parallel * normal_draws[0]
+        local_perpendicular = local_sigma_perpendicular * (
+            covariance_rho * normal_draws[0]
+            + math.sqrt(max(1e-9, 1.0 - covariance_rho * covariance_rho)) * normal_draws[1]
+        )
+
+        # Slow, bounded session drift is an absolute offset.  It is projected
+        # into the local frame only for this sample; it is never multiplied by
+        # the current longitudinal error, so it cannot recreate a wedge.
+        session_sigma = sigma * (0.035 + 0.025 * (1.0 - self.effort))
+        self.aim_state = 0.90 * self.aim_state + self.rng.normal(0.0, session_sigma * 0.35, 2)
+        session_limit = obj.radius * 0.075
+        session_bias = np.asarray(self.aim_state, dtype=float)
+        session_length = float(np.linalg.norm(session_bias))
+        if session_length > session_limit:
+            session_bias *= session_limit / session_length
+        self.aim_bias_state = 0.94 * self.aim_bias_state + self.rng.normal(0.0, session_sigma * 0.12)
+        self.aim_bias_state = float(np.clip(self.aim_bias_state, -session_limit, session_limit))
+        local_parallel += float(np.dot(session_bias, approach)) - self.aim_bias_state
+        local_perpendicular += float(np.dot(session_bias, normal))
+
         # Shared rush/panic component: the same signed draw used by timing,
         # projected onto the approach axis. Rushing cuts the aim short of the
         # circle; falling behind overshoots past it - and both correlate with
         # early/late taps.
         rush_aim = self.rush_draw * 0.70 * self.pressure * sigma * skill_gain
-        if distance > 1e-6:
-            offset = offset - rush_aim * np.array([dx / distance, dy / distance])
-
-        # Soft radial boundary (v2.11): a per-object limit with a gentle
-        # pull-back instead of a hard ring. Far landings are squashed toward
-        # the limit at 30%, so a sparse outer scatter exists and the boundary
-        # is ragged while rim landings stay rare.
-        soft_limit = obj.radius * (0.80 - 0.12 * self.skill) * self.rng.uniform(0.92, 1.08)
-        landing_error = float(np.linalg.norm(offset))
-        if landing_error > soft_limit and landing_error > 1e-9:
-            offset = offset / landing_error * (soft_limit + (landing_error - soft_limit) * 0.30)
+        local_parallel -= rush_aim
+        offset = local_parallel * approach + local_perpendicular * normal
 
         # Aim lapse: a rare large over/undershoot that lands outside the circle.
         lapse_probability = (
@@ -1047,6 +1061,14 @@ class HumanTracePlanner:
             lapse_distance = obj.radius * self.rng.uniform(1.05, 1.5)
             offset = offset + lapse_distance * np.array([math.cos(direction), math.sin(direction)])
             self.aim_lapses += 1
+
+        # Do not clip ordinary landings.  A very-far safety bound protects the
+        # playfield model from a rare compound lapse without introducing the
+        # old rim ring; its threshold is outside the circle by a wide margin.
+        landing_error = float(np.linalg.norm(offset))
+        far_limit = obj.radius * 2.0
+        if landing_error > far_limit and landing_error > 1e-9:
+            offset *= far_limit / landing_error
 
         error = float(np.linalg.norm(offset))
         self.landing_offsets[index] = (float(offset[0]), float(offset[1]))
@@ -1379,7 +1401,11 @@ class HumanTracePlanner:
             # object cannot be reached at the profile ceiling, begin now and
             # let the normal resampler clamp the resulting high-speed trace.
             segment_start = float(available_from)
-        actual_duration = max(self.step_ms, float(hit_time) - segment_start)
+        # The event can arrive inside one cursor sample interval.  Keep the
+        # physical segment duration equal to the actual positive time span;
+        # forcing it up to ``step_ms`` would leave the final sample at tau<1
+        # and make an otherwise exact Hermite endpoint appear discontinuous.
+        actual_duration = max(1e-6, float(hit_time) - segment_start)
         target_reached = actual_duration + 1e-6 >= minimum_duration and available + 1e-6 >= minimum_duration
         if target_reached:
             solver_target = target.copy()
@@ -1405,7 +1431,10 @@ class HumanTracePlanner:
         predicted = start + start_velocity * horizon_seconds + 0.5 * start_acceleration * horizon_seconds**2
         predicted_error = target - predicted
         reaction_latency_ms = 28.0 + 22.0 * (1.0 - self.skill)
-        correction_threshold = max(radius * (0.30 + 0.18 * (1.0 - self.skill)), self.params.aim_sigma * 2.0)
+        correction_threshold = max(
+            radius * (0.45 + 0.25 * (1.0 - self.skill)),
+            self.params.aim_sigma * 3.0,
+        )
         if (
             not self.profile.perfect_baseline
             and np.linalg.norm(predicted_error) > correction_threshold
@@ -1418,7 +1447,12 @@ class HumanTracePlanner:
             if correction_length > correction_limit:
                 correction_acceleration *= correction_limit / correction_length
             state.correction = correction_acceleration
-            state.refractory_until_ms = float(hit_time) + 90.0 + 90.0 * (1.0 - self.effort)
+            # Refractory time spans more than one ordinary object at the
+            # reference profile.  This keeps feedback as an occasional
+            # submovement instead of a decorative correction on every
+            # segment, while sharp/long errors can still trigger once the
+            # motor response has genuinely settled.
+            state.refractory_until_ms = float(hit_time) + 220.0 + 180.0 * (1.0 - self.effort) + 80.0 * (1.0 - self.skill)
             self.motion_correction_events += 1
         else:
             state.correction *= math.exp(-actual_duration / 140.0)
@@ -1426,16 +1460,42 @@ class HumanTracePlanner:
         count = max(2, int(math.ceil(actual_duration / self.step_ms)) + 1)
         times = np.linspace(segment_start, float(hit_time), count)
         normalized_time = np.clip((times - segment_start) / actual_duration, 0.0, 1.0)
-        base_positions, base_velocities, base_accelerations = _quintic_hermite(
-            solver_start,
-            start_velocity,
-            start_acceleration,
-            solver_target,
-            solver_endpoint_velocity,
-            solver_endpoint_acceleration,
-            actual_duration,
-            normalized_time,
-        )
+
+        def solve_base() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            return _quintic_hermite(
+                solver_start,
+                start_velocity,
+                start_acceleration,
+                solver_target,
+                solver_endpoint_velocity,
+                solver_endpoint_acceleration,
+                actual_duration,
+                normalized_time,
+            )
+
+        base_positions, base_velocities, base_accelerations = solve_base()
+        # The geometry-derived knot velocity is a local continuity target, not
+        # permission for a quintic overshoot to consume the whole movement in
+        # a flick.  When there is enough time to reach the target, gently
+        # reduce the shared endpoint derivatives until the sampled base path
+        # fits a per-move envelope.  The resulting endpoint values are then
+        # persisted and inherited by the next segment, so C1/C2 sharing is
+        # retained.  Dense impossible events keep their existing late-arrival
+        # semantics instead of being silently slowed into a false hit.
+        profile_speed_limit = max_speed * (1.20 if not self.profile.perfect_baseline else 1.0)
+        derivative_scale = 1.0
+        if target_reached and not self.profile.perfect_baseline:
+            for _ in range(4):
+                base_speed_max = float(np.max(np.linalg.norm(base_velocities, axis=1)))
+                if base_speed_max <= profile_speed_limit * 1.01:
+                    break
+                correction = float(np.clip(profile_speed_limit / max(base_speed_max, 1e-9), 0.70, 0.96))
+                derivative_scale *= correction
+                solver_endpoint_velocity *= correction
+                solver_endpoint_acceleration *= correction
+                base_positions, base_velocities, base_accelerations = solve_base()
+        else:
+            base_speed_max = float(np.max(np.linalg.norm(base_velocities, axis=1)))
         tangent = _normalised(solver_target - solver_start)
         if not np.any(tangent):
             tangent = _normalised(endpoint_velocity) if np.any(endpoint_velocity) else np.array([1.0, 0.0])
@@ -1444,7 +1504,6 @@ class HumanTracePlanner:
         initial_noise = state.ou_offset.copy()
         initial_noise = float(np.dot(initial_noise, normal)) * normal + float(np.dot(initial_noise, tangent)) * tangent * 0.25
         base_end_position = np.asarray(base_positions[-1], dtype=float).copy()
-        base_speed_max = float(np.max(np.linalg.norm(base_velocities, axis=1)))
         base_acceleration_max = float(np.max(np.linalg.norm(base_accelerations, axis=1)))
         base_jerk_max = 0.0
         if len(base_accelerations) >= 2:
@@ -1452,6 +1511,23 @@ class HumanTracePlanner:
                 np.max(np.linalg.norm(np.diff(base_accelerations, axis=0), axis=1))
                 / max(actual_duration / 1000.0 / max(len(base_accelerations) - 1, 1), 1e-6)
             )
+        following_point, following_time = (
+            window[1]
+            if len(window) > 1
+            else (solver_target.copy(), float(hit_time) + max(self.step_ms, actual_duration))
+        )
+        incoming_distance = float(np.linalg.norm(solver_target - solver_start))
+        outgoing_distance = float(np.linalg.norm(np.asarray(following_point) - solver_target))
+        incoming_seconds = max((float(hit_time) - float(previous_waypoint_time)) / 1000.0, 1e-3)
+        outgoing_seconds = max((float(following_time) - float(hit_time)) / 1000.0, 1e-3)
+        nominal_knot_speed = min(
+            2.0 * incoming_distance / incoming_seconds * outgoing_distance / outgoing_seconds
+            / max(incoming_distance / incoming_seconds + outgoing_distance / outgoing_seconds, 1e-6),
+            self._speed_ceiling(max(incoming_distance, outgoing_distance, 1.0)),
+        )
+        geometric_carry_ratio = float(
+            np.linalg.norm(solver_endpoint_velocity) / max(nominal_knot_speed, 1.0)
+        )
         actual_end_position = state.position.copy()
         appended = 0
         initialized = False
@@ -1521,17 +1597,17 @@ class HumanTracePlanner:
                 "end_acceleration": solver_endpoint_acceleration.tolist(),
                 "corner_angle_deg": math.degrees(corner_angle),
                 "distance_px": distance,
-                "carry_ratio": float(
-                    np.linalg.norm(endpoint_velocity)
-                    / max(
-                        distance / max((hit_time - previous_waypoint_time) / 1000.0, 1e-3),
-                        1.0,
-                    )
-                ),
+                "carry_ratio": geometric_carry_ratio,
                 "window_size": len(window),
                 "base_speed_max_px_s": base_speed_max,
                 "base_acceleration_max_px_s2": base_acceleration_max,
                 "base_jerk_max_px_s3": base_jerk_max,
+                "available_duration_ms": available,
+                "actual_duration_ms": actual_duration,
+                "duration_share": actual_duration / max(available, self.step_ms),
+                "minimum_duration_ms": minimum_duration,
+                "profile_speed_limit_px_s": profile_speed_limit,
+                "endpoint_derivative_scale": derivative_scale,
                 "realized": self._continuous_endpoint_emitted,
                 "target_reached": target_reached,
                 "break_before": break_before,
@@ -1548,12 +1624,31 @@ class HumanTracePlanner:
             if bool(segment.get("realized", True)) and bool(segment.get("target_reached", True))
         ]
         segment_indices = {int(segment["object_index"]) for segment in segments}
+
+        def is_stacked_repeat(object_index: int) -> bool:
+            if object_index <= 0 or object_index + 1 >= len(self.map.objects):
+                return False
+            current = self.map.objects[object_index]
+            previous = self.map.objects[object_index - 1]
+            following = self.map.objects[object_index + 1]
+            if current.kind != "circle" or previous.kind != "circle" or following.kind != "circle":
+                return True
+            incoming = float(np.linalg.norm(
+                np.array([current.position.x - previous.end_position.x, current.position.y - previous.end_position.y])
+            ))
+            outgoing = float(np.linalg.norm(
+                np.array([following.position.x - current.end_position.x, following.position.y - current.end_position.y])
+            ))
+            stack_radius = max(float(current.radius), float(previous.radius), float(following.radius)) * 0.5
+            return min(incoming, outgoing) < max(4.0, stack_radius)
+
         active_segments = [
             segment
             for segment in segments
             if not bool(segment.get("break_before", False))
             and int(segment["object_index"]) - 1 in segment_indices
             and int(segment["object_index"]) + 1 in segment_indices
+            and not is_stacked_repeat(int(segment["object_index"]))
         ]
         flow = [segment for segment in active_segments if float(segment["corner_angle_deg"]) <= 45.0]
         turns = [segment for segment in active_segments if 45.0 < float(segment["corner_angle_deg"]) <= 120.0]
@@ -1588,6 +1683,16 @@ class HumanTracePlanner:
             float(np.linalg.norm(np.asarray(segment["base_end"]) - np.asarray(segment["target"])))
             for segment in segments
         ]
+        duration_shares = [
+            float(segment["duration_share"])
+            for segment in segments
+            if "duration_share" in segment
+        ]
+        derivative_scales = [
+            float(segment["endpoint_derivative_scale"])
+            for segment in segments
+            if "endpoint_derivative_scale" in segment
+        ]
         return {
             "segments": len(segments),
             "correction_events": self.motion_correction_events,
@@ -1611,6 +1716,12 @@ class HumanTracePlanner:
                 (float(segment["base_jerk_max_px_s3"]) for segment in segments),
                 default=0.0,
             ),
+            "timing_allocation": {
+                "duration_share_min": min(duration_shares, default=0.0),
+                "duration_share_median": float(np.median(duration_shares)) if duration_shares else 0.0,
+                "duration_share_max": max(duration_shares, default=0.0),
+                "endpoint_derivative_scale_min": min(derivative_scales, default=1.0),
+            },
             "tangent_reset_excess_deg": 0.0,
         }
 

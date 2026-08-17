@@ -2,8 +2,16 @@ from __future__ import annotations
 
 import gzip
 import json
+import math
 
-from human_sim.benchmark import _kinematic_summary, _monotonicity, format_summary, run_benchmark, write_report
+from human_sim.benchmark import (
+    _approach_aligned_summary,
+    _kinematic_summary,
+    _monotonicity,
+    format_summary,
+    run_benchmark,
+    write_report,
+)
 from human_sim.schemas import TraceFrame
 
 
@@ -54,6 +62,13 @@ def test_benchmark_reports_reproducibility_distributions_and_json(tmp_path):
     assert "context_distribution" in metrics
     assert "continuity" in metrics
     assert "flow_0_45" in metrics["continuity"]
+    assert metrics["approach_aligned"]["samples"] >= 32
+    assert "covariance_eigen_anisotropy" in metrics["approach_aligned"]
+    assert "wedge_share" in metrics["approach_aligned"]
+    assert "planned_approach_aligned" in metrics
+    assert "covariance_eigen_anisotropy" in metrics["planned_approach_aligned"]
+    assert "motion" in metrics["continuity"]
+    assert "flick_share" in metrics["continuity"]["motion"]
     assert report["monotonicity"]["maps"] == ["benchmark"]
     assert report["monotonicity"]["seeds"] == [42, 43, 44]
     assert "acceleration_px_s2" in metrics["kinematics"]
@@ -89,3 +104,16 @@ def test_kinematics_resample_variable_event_frames():
     result = _kinematic_summary(frames, sample_rate_hz=500)
     assert result["resampled_frames"] == 2
     assert result["jerk_px_s3"]["n"] == 0
+
+
+def test_approach_summary_detects_a_wedge_and_accepts_a_cloud():
+    angles = [0.0, 0.45, 1.1, 2.0, 2.8, -0.8, -1.7, -2.6]
+    cloud = [[0.18 * math.cos(angle), 0.16 * math.sin(angle)] for angle in angles]
+    summary = _approach_aligned_summary(cloud)
+    assert summary["sector_entropy"] > 0.5
+    assert summary["abs_axis_correlation"] < 0.8
+    assert summary["samples"] == len(cloud)
+
+    wedge = [[0.4, 0.04], [0.6, -0.05], [0.8, 0.03], [-0.5, 0.04], [-0.7, -0.06]]
+    wedge_summary = _approach_aligned_summary(wedge)
+    assert wedge_summary["wedge_share"] > 0.6

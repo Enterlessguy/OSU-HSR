@@ -13,6 +13,7 @@ namespace HumanSim.Runner;
 internal static class Program
 {
     private const int protocolVersion = 1;
+    internal const string plannerVersion = "timing-sync-v2.13";
 
     private static readonly object prePlanLock = new();
     private static readonly Dictionary<string, Task<Trace>> prePlanTasks = new(StringComparer.Ordinal);
@@ -20,6 +21,11 @@ internal static class Program
 
     public static async Task<int> Main(string[] args)
     {
+        if (args.Length == 1 && args[0].Equals("--print-identity", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine($"planner_version={plannerVersion}");
+            return 0;
+        }
         StreamWriter? logWriter = null;
         try
         {
@@ -313,7 +319,7 @@ internal static class Program
         string mapPlanPath = Path.Combine(outputDirectory, $"{runKey}.map.ndjson.gz");
         string tracePath = Path.Combine(outputDirectory, $"{runKey}.trace.ndjson.gz");
 
-        Trace? cached = tryLoadCachedTrace(tracePath, hash, beatmapMd5, mods, clockRate, effectiveOptions);
+        Trace? cached = tryLoadCachedTrace(tracePath, hash, beatmapMd5, mods, clockRate, effectiveOptions, workspaceRoot);
         if (cached != null)
         {
             Console.WriteLine($"Automatic trace cache hit: {tracePath}");
@@ -427,7 +433,7 @@ internal static class Program
         }
     }
 
-    private static Trace? tryLoadCachedTrace(string tracePath, string beatmapSha256, string beatmapMd5, string[] mods, double clockRate, Options options)
+    private static Trace? tryLoadCachedTrace(string tracePath, string beatmapSha256, string beatmapMd5, string[] mods, double clockRate, Options options, string workspaceRoot)
     {
         if (!File.Exists(tracePath))
             return null;
@@ -442,16 +448,25 @@ internal static class Program
             if (Math.Abs(header.ClockRate - clockRate) > 1e-9) return null;
             if (header.SampleRateHz != options.SampleRateHz) return null;
             if (header.DiagnosticPerfect != (options.AutoPlanMode == "perfect")) return null;
+            if (!StringComparer.OrdinalIgnoreCase.Equals(header.PlannerVersion, plannerVersion)) return null;
+            string expectedGitCommit = gitCommit(workspaceRoot);
+            if (!String.Equals(expectedGitCommit, "unknown", StringComparison.OrdinalIgnoreCase)
+                && !StringComparer.OrdinalIgnoreCase.Equals(header.GitCommit, expectedGitCommit))
+                return null;
 
             string manifestPath = tracePath + ".manifest.json";
-            if (File.Exists(manifestPath))
-            {
-                using JsonDocument manifest = JsonDocument.Parse(File.ReadAllBytes(manifestPath));
-                if (!StringComparer.OrdinalIgnoreCase.Equals(manifest.RootElement.GetProperty("beatmap_sha256").GetString(), beatmapSha256))
-                    return null;
-                if (!StringComparer.OrdinalIgnoreCase.Equals(manifest.RootElement.GetProperty("configuration_sha256").GetString(), canonicalConfiguration(options)))
-                    return null;
-            }
+            if (!File.Exists(manifestPath)) return null;
+            using JsonDocument manifest = JsonDocument.Parse(File.ReadAllBytes(manifestPath));
+            if (!StringComparer.OrdinalIgnoreCase.Equals(manifest.RootElement.GetProperty("beatmap_sha256").GetString(), beatmapSha256))
+                return null;
+            if (!StringComparer.OrdinalIgnoreCase.Equals(manifest.RootElement.GetProperty("configuration_sha256").GetString(), canonicalConfiguration(options)))
+                return null;
+            if (!StringComparer.OrdinalIgnoreCase.Equals(manifest.RootElement.GetProperty("planner_version").GetString(), plannerVersion))
+                return null;
+            if (!StringComparer.OrdinalIgnoreCase.Equals(manifest.RootElement.GetProperty("git_commit").GetString(), header.GitCommit))
+                return null;
+            if (!StringComparer.OrdinalIgnoreCase.Equals(manifest.RootElement.GetProperty("build_identity").GetString(), header.BuildIdentity))
+                return null;
 
             return trace;
         }
@@ -468,8 +483,31 @@ internal static class Program
         // sorted keys, compact separators, and Python-style float formatting.
         // Sorted key order must match Python: "percentile" < "perfect_baseline".
         double effectiveSkill = options.SkillLevel >= 0 ? options.SkillLevel : options.Percentile;
-        string json = $"{{\"effort_level\":{pythonFloat(options.EffortLevel)},\"percentile\":{pythonFloat(options.Percentile)},\"perfect_baseline\":{(options.AutoPlanMode == "perfect" ? "true" : "false")},\"planner_version\":\"timing-sync-v2.11\",\"sample_rate_hz\":{options.SampleRateHz},\"seed\":{options.Seed},\"skill_level\":{pythonFloat(effectiveSkill)}}}";
+        string json = $"{{\"effort_level\":{pythonFloat(options.EffortLevel)},\"percentile\":{pythonFloat(options.Percentile)},\"perfect_baseline\":{(options.AutoPlanMode == "perfect" ? "true" : "false")},\"planner_version\":\"{plannerVersion}\",\"sample_rate_hz\":{options.SampleRateHz},\"seed\":{options.Seed},\"skill_level\":{pythonFloat(effectiveSkill)}}}";
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant();
+    }
+
+    private static string gitCommit(string workspaceRoot)
+    {
+        try
+        {
+            using Process process = Process.Start(new ProcessStartInfo("git")
+            {
+                WorkingDirectory = workspaceRoot,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                Arguments = "rev-parse HEAD",
+            }) ?? throw new InvalidOperationException("unable to start git");
+            string output = process.StandardOutput.ReadToEnd().Trim();
+            process.WaitForExit(2000);
+            return process.ExitCode == 0 && output.Length > 0 ? output : "unknown";
+        }
+        catch
+        {
+            return "unknown";
+        }
     }
 
     private static string pythonFloat(double value)
@@ -1236,6 +1274,10 @@ internal sealed class Trace
                      ?? throw new InvalidDataException("Malformed trace header.");
         if (header.Kind != "trace_header" || header.SchemaVersion != 1 || !header.Synthetic)
             throw new InvalidDataException("Runner accepts only schema-v1 visibly synthetic traces.");
+        if (!StringComparer.OrdinalIgnoreCase.Equals(header.PlannerVersion, Program.plannerVersion)
+            || String.IsNullOrWhiteSpace(header.GitCommit)
+            || String.IsNullOrWhiteSpace(header.BuildIdentity))
+            throw new InvalidDataException($"Trace planner identity is missing or stale; expected {Program.plannerVersion}.");
         if (header.SampleRateHz is < 60 or > 1000)
             throw new InvalidDataException("Trace sample rate must be between 60 and 1000 Hz.");
 
@@ -1283,6 +1325,9 @@ internal sealed class TraceHeader
     [JsonPropertyName("timeline_start_effective_ms")] public double TimelineStartEffectiveMs { get; init; }
     [JsonPropertyName("synthetic")] public bool Synthetic { get; init; }
     [JsonPropertyName("diagnostic_perfect")] public bool DiagnosticPerfect { get; init; }
+    [JsonPropertyName("planner_version")] public string PlannerVersion { get; init; } = "";
+    [JsonPropertyName("git_commit")] public string GitCommit { get; init; } = "";
+    [JsonPropertyName("build_identity")] public string BuildIdentity { get; init; } = "";
 }
 
 internal sealed class TraceFrame

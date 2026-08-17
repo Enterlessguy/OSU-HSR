@@ -155,6 +155,9 @@ class TraceFrame:
 @dataclass(frozen=True)
 class RunManifest:
     schema_version: int
+    planner_version: str
+    git_commit: str
+    build_identity: str
     synthetic: bool
     beatmap_sha256: str
     map_plan_sha256: str

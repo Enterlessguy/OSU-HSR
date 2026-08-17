@@ -98,7 +98,15 @@ include exact same-seed reproducibility, one-to-one object/press coverage,
 cross-seed landing delta/correlation, lag-2..8 periodicity, normalized landing
 radius (mean/p95/rim share), angular entropy, successful landings, timing
 distribution, cursor velocity/acceleration/jerk, structured context-label
-shares, and skill/effort monotonicity.
+shares, and skill/effort monotonicity. Each matched landing also reports the
+approach-aligned longitudinal/lateral means and spreads, covariance
+anisotropy, undershoot share, skewness/kurtosis, sector entropy,
+`corr(|u|,|v|)`, tail/rim rates, and the explicit axis-wedge score. These
+metrics use the actual one-to-one matched press error, so a screen-space
+aggregate cannot hide a local-frame arrow. The same fields are emitted as
+`planned_approach_aligned` from sampled landing offsets, isolating the aim
+distribution from timing/late-arrival contamination while retaining the
+press-time view for replay comparison.
 
 The broad default gates are artifact detectors rather than snapshot targets:
 absolute cross-seed correlation <= 0.35 when every seed pair has at least 32
@@ -109,22 +117,53 @@ offsets for correctly matched presses; `press_radial` is retained separately
 to expose cursor/timing contamination. Normal stochastic variation should not
 be handled by tightening these limits.
 
+The approach-aligned artifact gates are intentionally broad: at least 64
+samples per map, undershoot share between 0.42 and 0.78, covariance
+anisotropy <= 2.00, absolute-axis correlation <= 0.55, sector entropy >= 0.70,
+and wedge share <= 0.42. The reference skill-50/effort-90 target is tighter
+(roughly 0.55-0.68 undershoot, 1.05-1.35 anisotropy, correlation < 0.30,
+and wedge < 0.30), but those values are calibration guidance rather than
+brittle snapshots. Press-time gates use only maps with at least 85% success
+and timing p95 <= 60 ms; excluded maps remain listed in JSON diagnostics.
+The planned sampler has a separate cloud/wedge gate (undershoot 0.40-0.75,
+anisotropy <= 1.75, absolute-axis correlation <= 0.40, sector entropy >=
+0.75, wedge <= 0.32), so a difficult map cannot hide a directional sampler
+artifact while its raw press-time metrics remain visible.
+
 Continuity diagnostics are stratified by ordinary-circle corner angle and ignore
-explicit idle breaks and slider tracking. Default gates require shallow
+explicit idle breaks, slider tracking, and stacked repeats (which are allowed
+to dwell or reverse). Default gates require shallow
 0-45-degree flow to have severe-stop share <= 0.15 and median carry >= 0.50;
-45-120-degree turns must carry less, reversals may approach zero without a
+45-120-degree turns must not exceed shallow-flow carry by more than 0.05,
+reversals may approach zero without a
  restart spike (default carry ratio <= 2.5 in well-sampled reversal windows),
  tangent-reset excess p95 must stay <= 90 degrees, and the base Hermite path must meet position (1e-4 px), shared
 velocity (1e-5 px/s), and shared acceleration (1e-3 px/s²) tolerances. Cursor
 kinematics are differentiated only after resampling to the configured cadence;
 the five-sample triangular resampling filter is recorded in JSON, and p95
 speed/acceleration/lateral-acceleration/jerk bounds are checked. The raw
-event-frame trace remains available for timing and dispatch analysis.
+event-frame trace remains available for timing and dispatch analysis. The
+uniform-cadence motion report additionally records launch-delay share, transit
+share, active-motion share, p50/p95/max speed, speed normalized by available
+gap and speed ceiling, velocity carry, severe-stop share, and an unnecessary
+flick count/share. A flick is gated only when the map gap has spare time and
+the measured 10%-to-90% travel is both compressed and unusually fast; genuine
+dense late-arrival misses are not relabelled as flicks.
 
 Skill and effort monotonicity runs cover every selected map and the first three
 benchmark seeds by default. Paired profile changes are aggregated across seeds;
 only consistent inversions fail the gate. Use `--monotonicity-seeds` to choose a
 different seed subset.
+
+Trace headers and manifests carry `planner_version`, `git_commit`, and
+`build_identity`. The runner rejects missing or stale identity fields before
+using a cached trace. `research/run-dev-build.ps1` prints the checkout
+identity, supports an opt-in clean-checkout `-Update` (fetch plus
+`--ff-only` only), reinstalls the editable package, builds the client and
+runner, verifies Python/runner identity, and launches only after those checks.
+Use `-VerifyTrace <trace.gz>` when validating a specific existing trace; old
+v2.11/v2.12 artifacts are retained as raw evidence but are not accepted as
+current cache entries.
 
 The benchmark is classified as
 `planner-only/not-runtime-validated` when no runner telemetry is supplied.

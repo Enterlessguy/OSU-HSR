@@ -11,7 +11,7 @@ import subprocess
 from .benchmark import format_summary, run_benchmark, write_report
 from .collector import collect_replays
 from .dataset import extract_features
-from .io import load_map_plan, write_trace
+from .io import load_map_plan, repository_git_commit, write_trace
 from .library_audit import audit_library
 from .modeling import evaluate, fit_models
 from .planner import PLANNER_VERSION, HumanTracePlanner
@@ -34,6 +34,8 @@ def _plan(args: argparse.Namespace) -> int:
     frames = planner.generate()
     model_hash = hashlib.sha256(Path(args.model_bundle).read_bytes()).hexdigest() if args.model_bundle else None
     model_version = model_hash or ("built_in_perfect_baseline_v1" if profile.perfect_baseline else "built_in_baseline_v1")
+    git_commit = repository_git_commit()
+    build_identity = f"human-sim-python:{PLANNER_VERSION}:{git_commit}"
     digest = write_trace(
         args.output,
         map_plan=map_plan,
@@ -43,6 +45,9 @@ def _plan(args: argparse.Namespace) -> int:
         frames=frames,
         model_sha256=model_version,
         diagnostic_perfect=profile.perfect_baseline,
+        planner_version=PLANNER_VERSION,
+        git_commit=git_commit,
+        build_identity=build_identity,
     )
     result = validate_trace(args.output)
     result["trace_sha256"] = digest
@@ -64,6 +69,9 @@ def _plan(args: argparse.Namespace) -> int:
     ).encode()
     manifest = RunManifest(
         schema_version=1,
+        planner_version=PLANNER_VERSION,
+        git_commit=git_commit,
+        build_identity=build_identity,
         synthetic=True,
         beatmap_sha256=map_plan.beatmap_sha256,
         map_plan_sha256=hashlib.sha256(Path(args.map_plan).read_bytes()).hexdigest(),

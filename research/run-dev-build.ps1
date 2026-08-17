@@ -1,12 +1,99 @@
-# OSU Human Simulator - dev build launcher
-# Prompts for skill/effort, shows an educated sweet-spot effort recommendation,
-# rebuilds the research client + tools, updates the Python environment, then
-# starts the guarded auto-run session. The window stays open after the runner
-# exits so errors remain visible.
+param(
+    [switch]$Update,
+    [string]$VerifyTrace
+)
 
-$ErrorActionPreference = "Continue"
-$root = Split-Path -Parent $PSScriptRoot
-Set-Location $root
+# OSU Human Simulator - dev build launcher
+# Prompts for skill/effort, verifies the current checkout, rebuilds the
+# research client + tools, updates the editable Python package, then starts
+# the guarded offline auto-run session. The terminal remains open after every
+# outcome so diagnostics are not lost.
+
+$ErrorActionPreference = "Stop"
+$scriptRoot = (Resolve-Path -LiteralPath $PSScriptRoot).Path
+$root = (Resolve-Path -LiteralPath (Join-Path $scriptRoot "..")).Path
+Set-Location -LiteralPath $root
+
+function Invoke-GitChecked {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+    $output = & git @Arguments 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "git $($Arguments -join ' ') failed with exit code $LASTEXITCODE. $($output -join ' ')"
+    }
+    return $output
+}
+
+function Invoke-NativeChecked {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $false)][object[]]$Arguments = @()
+    )
+    & $FilePath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FilePath failed with exit code $LASTEXITCODE."
+    }
+}
+
+function Get-PlannerVersion {
+    $plannerPath = Join-Path $root "research\human-sim\src\human_sim\planner.py"
+    $source = Get-Content -LiteralPath $plannerPath -Raw
+    if ($source -notmatch 'PLANNER_VERSION\s*=\s*"([^"]+)"') {
+        throw "PLANNER_VERSION was not found in $plannerPath."
+    }
+    return $Matches[1]
+}
+
+function Get-CheckoutIdentity {
+    $branch = ([string](Invoke-GitChecked @("branch", "--show-current"))).Trim()
+    if ([string]::IsNullOrWhiteSpace($branch)) {
+        throw "Detached or ambiguous HEAD; refusing to build or launch."
+    }
+    $commit = ([string](Invoke-GitChecked @("rev-parse", "HEAD"))).Trim()
+    $status = @(Invoke-GitChecked @("status", "--porcelain=v1"))
+    return [pscustomobject]@{
+        Branch = $branch
+        Commit = $commit
+        Dirty = $status.Count -gt 0
+        Status = $status
+        PlannerVersion = Get-PlannerVersion
+    }
+}
+
+function Assert-TraceIdentity {
+    param([Parameter(Mandatory = $true)][string]$TracePath, [Parameter(Mandatory = $true)]$Identity)
+    $resolvedTrace = (Resolve-Path -LiteralPath $TracePath).Path
+    $manifestPath = "$resolvedTrace.manifest.json"
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "Trace manifest is missing: $manifestPath"
+    }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    foreach ($property in @("planner_version", "git_commit", "build_identity")) {
+        if ([string]::IsNullOrWhiteSpace([string]$manifest.$property)) {
+            throw "Trace manifest lacks ${property}: $manifestPath"
+        }
+    }
+    $expectedBuildIdentity = "human-sim-python:$($Identity.PlannerVersion):$($Identity.Commit)"
+    if ([string]$manifest.planner_version -ne $Identity.PlannerVersion -or [string]$manifest.git_commit -ne $Identity.Commit -or [string]$manifest.build_identity -ne $expectedBuildIdentity) {
+        throw "Trace identity mismatch. expected planner=$($Identity.PlannerVersion), git=$($Identity.Commit); found planner=$($manifest.planner_version), git=$($manifest.git_commit)."
+    }
+    $file = [IO.File]::OpenRead($resolvedTrace)
+    try {
+        $gzip = [IO.Compression.GzipStream]::new($file, [IO.Compression.CompressionMode]::Decompress)
+        try {
+            $reader = [IO.StreamReader]::new($gzip)
+            try {
+                $header = $reader.ReadLine() | ConvertFrom-Json
+            }
+            finally { $reader.Dispose() }
+        }
+        finally { $gzip.Dispose() }
+    }
+    finally { $file.Dispose() }
+    if ([string]$header.planner_version -ne $Identity.PlannerVersion -or [string]$header.git_commit -ne $Identity.Commit -or [string]$header.build_identity -ne $expectedBuildIdentity) {
+        throw "Trace header identity mismatch: $resolvedTrace"
+    }
+    Write-Host "Verified trace identity: planner=$($Identity.PlannerVersion), git=$($Identity.Commit), trace=$resolvedTrace" -ForegroundColor Green
+}
 
 function Get-RecommendedEffort {
     param([double]$Skill)
@@ -126,38 +213,102 @@ else {
 }
 
 $mode = if ($skill -ge 100) { "perfect" } else { "profile" }
+$exitCode = 0
 
-Write-Host ""
-Write-Host "Launch profile: $modeHint, mode=$mode skill=$skill effort=$effort" -ForegroundColor Cyan
+try {
+    $identity = Get-CheckoutIdentity
+    Write-Host ""
+    Write-Host "Checkout: branch=$($identity.Branch) commit=$($identity.Commit) dirty=$($identity.Dirty) planner=$($identity.PlannerVersion)" -ForegroundColor Cyan
 
-$env:DOTNET_CLI_HOME = Join-Path $root ".dotnet-home"
-$env:NUGET_PACKAGES = Join-Path $root ".nuget\packages"
-$env:APPDATA = Join-Path $root ".dotnet-home\AppData\Roaming"
-$env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
+    if ($Update) {
+        if ($identity.Dirty) {
+            throw "-Update requires a clean checkout; refusing to overwrite local work."
+        }
+        $upstream = ([string](Invoke-GitChecked @("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"))).Trim()
+        if ([string]::IsNullOrWhiteSpace($upstream)) {
+            throw "-Update requires a configured upstream branch; none is available."
+        }
+        Write-Host "Updating only by fetch + fast-forward from $upstream..." -ForegroundColor Yellow
+        Invoke-GitChecked @("fetch", "--prune") | Out-Host
+        Invoke-GitChecked @("merge", "--ff-only", $upstream) | Out-Host
+        $identity = Get-CheckoutIdentity
+        if ($identity.Dirty) { throw "Checkout became dirty after fast-forward; refusing to launch." }
+        Write-Host "Updated checkout: branch=$($identity.Branch) commit=$($identity.Commit) planner=$($identity.PlannerVersion)" -ForegroundColor Green
+    }
+    elseif ($identity.Dirty) {
+        Write-Host "Checkout is dirty; continuing without update because no -Update was requested." -ForegroundColor Yellow
+    }
 
-$dotnet = Join-Path $root ".dotnet\dotnet.exe"
+    Write-Host ""
+    Write-Host "Launch profile: $modeHint, mode=$mode skill=$skill effort=$effort" -ForegroundColor Cyan
 
-Write-Host "=== [1/4] Building research client (osu!lazer + HSR) ===" -ForegroundColor Cyan
-& (Join-Path $root "research\build-research.ps1")
+    $env:DOTNET_CLI_HOME = Join-Path $root ".dotnet-home"
+    $env:NUGET_PACKAGES = Join-Path $root ".nuget\packages"
+    $env:APPDATA = Join-Path $root ".dotnet-home\AppData\Roaming"
+    $env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
 
-Write-Host "=== [2/4] Building research tools ===" -ForegroundColor Cyan
-& $dotnet build (Join-Path $root "research\HumanSim.MapExporter\HumanSim.MapExporter.csproj") --configfile (Join-Path $root "NuGet.Config")
-& $dotnet build (Join-Path $root "research\HumanSim.ReplayExtractor\HumanSim.ReplayExtractor.csproj") --configfile (Join-Path $root "NuGet.Config")
-& $dotnet build (Join-Path $root "research\HumanSim.Runner\HumanSim.Runner.csproj") --configfile (Join-Path $root "NuGet.Config")
+    $dotnet = Join-Path $root ".dotnet\dotnet.exe"
+    $python = Join-Path $root "research\human-sim\.venv\Scripts\python.exe"
+    $humanSim = Join-Path $root "research\human-sim\.venv\Scripts\human-sim.exe"
+    $client = Join-Path $root "osu.Desktop\bin\Debug\net8.0\osu!.exe"
+    $runnerProject = Join-Path $root "research\HumanSim.Runner\HumanSim.Runner.csproj"
+    $runnerDll = Join-Path $root "research\HumanSim.Runner\bin\Debug\net8.0\HumanSim.Runner.dll"
+    foreach ($required in @($dotnet, $python, $humanSim)) {
+        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+            throw "Required local tool is missing: $required"
+        }
+    }
 
-Write-Host "=== [3/4] Updating Python environment ===" -ForegroundColor Cyan
-Push-Location (Join-Path $root "research\human-sim")
-& ".\.venv\Scripts\python.exe" -m pip install -e ".[test]"
-Pop-Location
+    Write-Host "=== [1/5] Building research client (osu!lazer + HSR) ===" -ForegroundColor Cyan
+    Invoke-NativeChecked "powershell.exe" @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $root "research\build-research.ps1"))
 
-Write-Host "=== [4/4] Launching auto-run ===" -ForegroundColor Green
-if ($mode -eq "perfect") {
-    & (Join-Path $root "research\human-sim\.venv\Scripts\human-sim.exe") auto-run (Join-Path $root "osu.Desktop\bin\Debug\net8.0\osu!.exe") --mode perfect
+    Write-Host "=== [2/5] Building research tools ===" -ForegroundColor Cyan
+    foreach ($project in @(
+        (Join-Path $root "research\HumanSim.MapExporter\HumanSim.MapExporter.csproj"),
+        (Join-Path $root "research\HumanSim.ReplayExtractor\HumanSim.ReplayExtractor.csproj"),
+        $runnerProject
+    )) {
+        Invoke-NativeChecked $dotnet @("build", $project, "--configfile", (Join-Path $root "NuGet.config"))
+    }
+    if (-not (Test-Path -LiteralPath $runnerDll -PathType Leaf)) { throw "Runner build output is missing: $runnerDll" }
+
+    Write-Host "=== [3/5] Updating editable Python package ===" -ForegroundColor Cyan
+    Push-Location (Join-Path $root "research\human-sim")
+    try { Invoke-NativeChecked $python @("-m", "pip", "install", "-e", ".[test]") }
+    finally { Pop-Location }
+
+    Write-Host "=== [4/5] Verifying runtime identity ===" -ForegroundColor Cyan
+    $runtimeVersion = (& $python -c "from human_sim.planner import PLANNER_VERSION; print(PLANNER_VERSION)" | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $runtimeVersion -ne $identity.PlannerVersion) {
+        throw "Python runtime planner mismatch: source=$($identity.PlannerVersion), runtime=$runtimeVersion"
+    }
+    $runnerIdentity = (& $dotnet $runnerDll "--print-identity" | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $runnerIdentity -ne "planner_version=$($identity.PlannerVersion)") {
+        throw "Runner planner mismatch: expected planner_version=$($identity.PlannerVersion), found $runnerIdentity"
+    }
+    Write-Host "Verified source/Python/runner identity: planner=$($identity.PlannerVersion), git=$($identity.Commit)" -ForegroundColor Green
+    if ($VerifyTrace) { Assert-TraceIdentity -TracePath $VerifyTrace -Identity $identity }
+    else { Write-Host "No trace supplied for pre-launch identity verification; the runner will reject stale cache manifests." -ForegroundColor DarkYellow }
+
+    if (-not (Test-Path -LiteralPath $client -PathType Leaf)) { throw "Built client is missing: $client" }
+    Write-Host "=== [5/5] Launching guarded auto-run ===" -ForegroundColor Green
+    if ($mode -eq "perfect") {
+        & $humanSim auto-run $client --mode perfect
+    }
+    else {
+        & $humanSim auto-run $client --mode profile --skill $skill --effort $effort
+    }
+    $exitCode = $LASTEXITCODE
+    Write-Host "Runner exited with code $exitCode." -ForegroundColor Yellow
 }
-else {
-    & (Join-Path $root "research\human-sim\.venv\Scripts\human-sim.exe") auto-run (Join-Path $root "osu.Desktop\bin\Debug\net8.0\osu!.exe") --mode profile --skill $skill --effort $effort
+catch {
+    $exitCode = 1
+    Write-Host "LAUNCH BLOCKED: $($_.Exception.Message)" -ForegroundColor Red
+}
+finally {
+    Write-Host ""
+    Write-Host "Diagnostics are complete. This terminal stays open; press Enter to close." -ForegroundColor Yellow
+    Read-Host "Press Enter to close"
 }
 
-Write-Host ""
-Write-Host "Runner exited with code $LASTEXITCODE. This window stays open; press Enter to close." -ForegroundColor Yellow
-Read-Host "Press Enter to close"
+exit $exitCode

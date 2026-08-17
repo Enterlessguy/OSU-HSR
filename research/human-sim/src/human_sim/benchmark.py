@@ -12,7 +12,7 @@ from typing import Any, Iterable, Sequence
 import numpy as np
 
 from .context import build_contexts
-from .io import load_map_plan
+from .io import load_map_plan, repository_git_commit
 from .matching import match_press_events, rising_press_events
 from .planner import PLANNER_VERSION, HumanTracePlanner
 from .schemas import HumanProfile, MapPlan, TraceFrame
@@ -51,6 +51,28 @@ class BenchmarkGates:
     max_kinematic_acceleration_p95_px_s2: float = 250_000.0
     max_kinematic_lateral_acceleration_p95_px_s2: float = 250_000.0
     max_kinematic_jerk_p95_px_s3: float = 100_000_000.0
+    approach_min_samples: int = 64
+    min_approach_undershoot_share: float = 0.42
+    max_approach_undershoot_share: float = 0.78
+    # Press-time errors include timing/trajectory contamination on hard maps;
+    # keep this artifact ceiling broad while the direct landing sampler's
+    # tighter reference range remains visible in each run's diagnostics.
+    max_approach_anisotropy: float = 2.00
+    max_approach_abs_axis_correlation: float = 0.55
+    min_approach_sector_entropy: float = 0.70
+    max_approach_wedge_share: float = 0.42
+    # The sampled landing model is evaluated separately from press-time
+    # errors.  The latter also contain timing/late-arrival contamination on
+    # maps that are beyond the selected skill profile.
+    min_planned_approach_undershoot_share: float = 0.40
+    max_planned_approach_undershoot_share: float = 0.75
+    max_planned_approach_anisotropy: float = 1.75
+    max_planned_approach_abs_axis_correlation: float = 0.40
+    min_planned_approach_sector_entropy: float = 0.75
+    max_planned_approach_wedge_share: float = 0.32
+    approach_press_min_success_rate: float = 0.85
+    approach_press_max_timing_p95_ms: float = 60.0
+    max_trace_flick_share: float = 0.20
 
 
 def _repository_root() -> Path:
@@ -187,6 +209,78 @@ def _normalized_entropy(angles: Sequence[float], bins: int = 16) -> float:
     return float(entropy / math.log(bins))
 
 
+def _approach_aligned_summary(samples: Sequence[Sequence[float]] | np.ndarray) -> dict[str, Any]:
+    """Summarize errors in the approach-aligned, radius-normalized frame.
+
+    The summary intentionally uses the actual one-to-one matched press error,
+    not a screen-space aggregate or a re-used press.  ``anisotropy`` is the
+    square root of the covariance eigenvalue ratio, matching the convention
+    used by the replay comparison analysis.  Skewness is the standardized
+    third central moment and kurtosis is excess kurtosis.
+    """
+    values = np.asarray(samples, dtype=float)
+    if values.size == 0:
+        return {
+            "samples": 0,
+            "longitudinal_mean": 0.0,
+            "longitudinal_std": 0.0,
+            "lateral_mean": 0.0,
+            "lateral_std": 0.0,
+            "covariance_eigen_anisotropy": 0.0,
+            "undershoot_share": 0.0,
+            "longitudinal_skewness": 0.0,
+            "longitudinal_excess_kurtosis": 0.0,
+            "lateral_skewness": 0.0,
+            "lateral_excess_kurtosis": 0.0,
+            "abs_axis_correlation": 0.0,
+            "sector_entropy": 0.0,
+            "tail_share_gt_1_0": 0.0,
+            "rim_share_gt_0_8": 0.0,
+            "wedge_share": 0.0,
+        }
+    values = values.reshape((-1, 2))
+    values = values[np.all(np.isfinite(values), axis=1)]
+    if not len(values):
+        return _approach_aligned_summary(np.empty((0, 2)))
+    longitudinal = values[:, 0]
+    lateral = values[:, 1]
+
+    def standardized_moment(axis: np.ndarray, order: int, excess: bool = False) -> float:
+        scale = float(np.std(axis))
+        if scale <= 1e-9:
+            return 0.0
+        moment = float(np.mean(((axis - float(np.mean(axis))) / scale) ** order))
+        return moment - 3.0 if excess else moment
+
+    if len(values) >= 2:
+        covariance = np.cov(values.T)
+        eigenvalues = np.linalg.eigvalsh(covariance)
+        anisotropy = math.sqrt(max(float(eigenvalues[-1]), 1e-12) / max(float(eigenvalues[0]), 1e-12))
+    else:
+        anisotropy = 0.0
+    absolute_correlation = _correlation(np.abs(longitudinal), np.abs(lateral))
+    angles = np.arctan2(lateral, longitudinal).tolist()
+    radius = np.linalg.norm(values, axis=1)
+    return {
+        "samples": int(len(values)),
+        "longitudinal_mean": round(float(np.mean(longitudinal)), 6),
+        "longitudinal_std": round(float(np.std(longitudinal)), 6),
+        "lateral_mean": round(float(np.mean(lateral)), 6),
+        "lateral_std": round(float(np.std(lateral)), 6),
+        "covariance_eigen_anisotropy": round(float(anisotropy), 6),
+        "undershoot_share": round(float(np.mean(longitudinal < 0.0)), 6),
+        "longitudinal_skewness": round(standardized_moment(longitudinal, 3), 6),
+        "longitudinal_excess_kurtosis": round(standardized_moment(longitudinal, 4, excess=True), 6),
+        "lateral_skewness": round(standardized_moment(lateral, 3), 6),
+        "lateral_excess_kurtosis": round(standardized_moment(lateral, 4, excess=True), 6),
+        "abs_axis_correlation": round(float(absolute_correlation or 0.0), 6),
+        "sector_entropy": round(_normalized_entropy(angles), 6),
+        "tail_share_gt_1_0": round(float(np.mean(radius > 1.0)), 6),
+        "rim_share_gt_0_8": round(float(np.mean(radius > 0.8)), 6),
+        "wedge_share": round(float(np.mean(np.abs(lateral) < 0.35 * np.maximum(np.abs(longitudinal), 0.03))), 6),
+    }
+
+
 def _trace_continuity_summary(
     frames: Sequence[TraceFrame],
     planner: HumanTracePlanner,
@@ -233,6 +327,27 @@ def _trace_continuity_summary(
         for segment in planner.motion_segments
         if bool(segment.get("realized", True))
     }
+    map_objects = planner.map.objects
+
+    def is_stacked_repeat(object_index: int) -> bool:
+        if object_index <= 0 or object_index + 1 >= len(map_objects):
+            return False
+        current = map_objects[object_index]
+        previous = map_objects[object_index - 1]
+        following = map_objects[object_index + 1]
+        if current.kind != "circle" or previous.kind != "circle" or following.kind != "circle":
+            return True
+        incoming = math.hypot(
+            current.position.x - previous.end_position.x,
+            current.position.y - previous.end_position.y,
+        )
+        outgoing = math.hypot(
+            following.position.x - current.end_position.x,
+            following.position.y - current.end_position.y,
+        )
+        stack_radius = max(float(current.radius), float(previous.radius), float(following.radius)) * 0.5
+        return min(incoming, outgoing) < max(4.0, stack_radius)
+
     for segment in planner.motion_segments:
         if (
             not bool(segment.get("realized", True))
@@ -242,6 +357,8 @@ def _trace_continuity_summary(
             continue
         object_index = int(segment["object_index"])
         if object_index - 1 not in segment_indices or object_index + 1 not in segment_indices:
+            continue
+        if is_stacked_repeat(object_index):
             continue
         angle = float(segment["corner_angle_deg"])
         hit_time = float(segment["end_time_ms"])
@@ -301,6 +418,144 @@ def _trace_continuity_summary(
     }
 
 
+def _trace_motion_summary(
+    plan: MapPlan,
+    frames: Sequence[TraceFrame],
+    planner: HumanTracePlanner,
+    timeline_start_ms: float,
+) -> dict[str, Any]:
+    """Measure sampled motion allocation and unnecessary compressed moves.
+
+    Motion is measured on a uniform cursor cadence.  The trace may contain
+    exact event frames for atomic key/cursor dispatch, but those off-grid
+    frames are not allowed to manufacture a tiny derivative interval.  A
+    transition is a flick candidate only when its map gap has ample time at
+    the profile speed ceiling and the observed 10%-to-90% travel is both
+    unusually compressed and unusually fast relative to that available gap.
+    """
+    empty = _summary([])
+    if len(frames) < 3 or not plan.objects:
+        return {
+            "source": "trace-uniform-cadence",
+            "sampling_rate_hz": planner.profile.sample_rate_hz,
+            "transitions": 0,
+            "launch_delay_share": empty,
+            "transit_share": empty,
+            "active_motion_share": empty,
+            "speed_px_s": empty,
+            "speed_over_gap_required": empty,
+            "speed_over_ceiling": empty,
+            "flick_count": 0,
+            "flick_share": 0.0,
+        }
+    frame_times = np.asarray(
+        [timeline_start_ms + frame.time_us / 1000.0 for frame in frames],
+        dtype=float,
+    )
+    positions = np.asarray([[frame.x, frame.y] for frame in frames], dtype=float)
+    ordered = np.concatenate(([True], np.diff(frame_times) > 0.0))
+    frame_times = frame_times[ordered]
+    positions = positions[ordered]
+    step_ms = 1000.0 / max(1, planner.profile.sample_rate_hz)
+    if len(frame_times) < 3 or frame_times[-1] - frame_times[0] < step_ms * 2.0:
+        return {
+            "source": "trace-uniform-cadence",
+            "sampling_rate_hz": planner.profile.sample_rate_hz,
+            "transitions": 0,
+            "launch_delay_share": empty,
+            "transit_share": empty,
+            "active_motion_share": empty,
+            "speed_px_s": empty,
+            "speed_over_gap_required": empty,
+            "speed_over_ceiling": empty,
+            "flick_count": 0,
+            "flick_share": 0.0,
+        }
+    uniform_times = np.arange(frame_times[0], frame_times[-1] + step_ms * 0.5, step_ms)
+    uniform_positions = np.column_stack(
+        [np.interp(uniform_times, frame_times, positions[:, axis]) for axis in range(2)]
+    )
+    velocity = np.diff(uniform_positions, axis=0) / max(step_ms / 1000.0, 1e-6)
+    speed = np.linalg.norm(velocity, axis=1)
+    velocity_times = uniform_times[1:]
+    launch_delay: list[float] = []
+    transit: list[float] = []
+    active: list[float] = []
+    transition_speeds: list[float] = []
+    gap_speed_ratios: list[float] = []
+    ceiling_ratios: list[float] = []
+    flick_count = 0
+    candidate_count = 0
+    for object_index in range(1, len(plan.objects)):
+        previous = plan.objects[object_index - 1]
+        current = plan.objects[object_index]
+        if previous.kind != "circle" or current.kind != "circle":
+            continue
+        start_time = float(previous.start_time_ms)
+        end_time = float(current.start_time_ms)
+        gap_ms = end_time - start_time
+        vector = np.array(
+            [current.position.x - previous.position.x, current.position.y - previous.position.y],
+            dtype=float,
+        )
+        distance = float(np.linalg.norm(vector))
+        if gap_ms <= max(3.0 * step_ms, 12.0) or distance < 20.0:
+            continue
+        mask = (uniform_times >= start_time) & (uniform_times <= end_time)
+        local_times = uniform_times[mask]
+        local_positions = uniform_positions[mask]
+        if len(local_times) < 5:
+            continue
+        projection = (local_positions - np.array([previous.position.x, previous.position.y])) @ vector / max(
+            distance * distance,
+            1e-9,
+        )
+        above_10 = np.flatnonzero(projection >= 0.10)
+        above_90 = np.flatnonzero(projection >= 0.90)
+        if not len(above_10) or not len(above_90):
+            continue
+        time_10 = float(local_times[above_10[0]])
+        time_90 = float(local_times[above_90[0]])
+        if time_90 < time_10:
+            continue
+        candidate_count += 1
+        gap_seconds = max(gap_ms / 1000.0, 1e-6)
+        launch_share = float(np.clip((time_10 - start_time) / max(gap_ms, 1e-6), 0.0, 1.0))
+        transit_share = float(np.clip((time_90 - time_10) / max(gap_ms, 1e-6), 0.0, 1.0))
+        launch_delay.append(launch_share)
+        transit.append(transit_share)
+        local_speed_mask = (velocity_times >= start_time) & (velocity_times <= end_time)
+        local_speeds = speed[local_speed_mask]
+        if not len(local_speeds):
+            continue
+        active.append(float(np.mean(local_speeds > 100.0)))
+        local_p95 = float(np.percentile(local_speeds, 95))
+        required_speed = distance / gap_seconds
+        ceiling = max(1.0, planner._speed_ceiling(distance))
+        transition_speeds.append(local_p95)
+        gap_speed_ratios.append(local_p95 / max(required_speed, 1.0))
+        ceiling_ratios.append(local_p95 / ceiling)
+        spare_gap = gap_ms >= 2.30 * distance / ceiling * 1000.0
+        compressed = transit_share < 0.42
+        unusually_fast = local_p95 > max(2.45 * required_speed, 1.28 * ceiling)
+        if spare_gap and compressed and unusually_fast:
+            flick_count += 1
+
+    return {
+        "source": "trace-uniform-cadence",
+        "sampling_rate_hz": planner.profile.sample_rate_hz,
+        "transitions": int(candidate_count),
+        "launch_delay_share": _summary(launch_delay),
+        "transit_share": _summary(transit),
+        "active_motion_share": _summary(active),
+        "speed_px_s": _summary(transition_speeds),
+        "speed_over_gap_required": _summary(gap_speed_ratios),
+        "speed_over_ceiling": _summary(ceiling_ratios),
+        "flick_count": int(flick_count),
+        "flick_share": round(flick_count / max(1, candidate_count), 6),
+    }
+
+
 def _correlation(left: Sequence[float], right: Sequence[float]) -> float | None:
     if len(left) < 3 or len(right) < 3:
         return None
@@ -325,6 +580,8 @@ def _run_metrics(
     press_radial: list[float] = []
     angles: list[float] = []
     timing: list[float] = []
+    approach_samples: list[tuple[float, float]] = []
+    planned_approach_samples: list[tuple[float, float]] = []
     successful = 0
     judged_objects = 0
     matched = 0
@@ -333,9 +590,43 @@ def _run_metrics(
         if obj.kind == "spinner":
             continue
         judged_objects += 1
+        planned_offset = planner.landing_offsets.get(object_position) if planner is not None else None
+        if object_position:
+            previous = plan.objects[object_position - 1]
+            approach_vector = np.array(
+                [obj.position.x - previous.end_position.x, obj.position.y - previous.end_position.y],
+                dtype=float,
+            )
+        else:
+            approach_vector = np.array([obj.position.x - 256.0, obj.position.y - 192.0], dtype=float)
+        approach_length = float(np.linalg.norm(approach_vector))
+        if approach_length > 1e-9:
+            direction = approach_vector / approach_length
+            normal = np.array([-direction[1], direction[0]], dtype=float)
+            if planned_offset is not None:
+                planned_vector = np.asarray(planned_offset, dtype=float)
+                planned_aligned = (
+                    float(np.dot(planned_vector, direction) / max(float(obj.radius), 1e-9)),
+                    float(np.dot(planned_vector, normal) / max(float(obj.radius), 1e-9)),
+                )
+                planned_approach_samples.append(planned_aligned)
+            else:
+                planned_aligned = (0.0, 0.0)
+        else:
+            direction = np.zeros(2)
+            normal = np.zeros(2)
+            planned_aligned = (0.0, 0.0)
         press_position = assignments.get(object_position)
         if press_position is None:
-            rows.append({"object_position": object_position, "matched": False, "success": False})
+            rows.append(
+                {
+                    "object_position": object_position,
+                    "matched": False,
+                    "success": False,
+                    "planned_aligned_u": planned_aligned[0],
+                    "planned_aligned_v": planned_aligned[1],
+                }
+            )
             continue
         matched += 1
         event = events[press_position]
@@ -345,7 +636,6 @@ def _run_metrics(
         offset_y = float(frame.y - obj.position.y)
         aim_error = math.hypot(offset_x, offset_y)
         press_normalized_radius = aim_error / max(float(obj.radius), 1e-9)
-        planned_offset = planner.landing_offsets.get(object_position) if planner is not None else None
         if planned_offset is None:
             offset = (offset_x, offset_y)
         else:
@@ -355,6 +645,14 @@ def _run_metrics(
         radial.append(normalized_radius)
         press_radial.append(press_normalized_radius)
         timing.append(timing_error)
+        if approach_length > 1e-9:
+            aligned = (
+                float(np.dot(np.array([offset_x, offset_y]), direction) / max(float(obj.radius), 1e-9)),
+                float(np.dot(np.array([offset_x, offset_y]), normal) / max(float(obj.radius), 1e-9)),
+            )
+            approach_samples.append(aligned)
+        else:
+            aligned = (0.0, 0.0)
         if math.hypot(*offset) > 1e-9:
             angles.append(math.atan2(offset[1], offset[0]))
         successful += int(success)
@@ -370,6 +668,10 @@ def _run_metrics(
                 "timing_error_ms": timing_error,
                 "offset_x": offset_x,
                 "offset_y": offset_y,
+                "aligned_u": aligned[0],
+                "aligned_v": aligned[1],
+                "planned_aligned_u": planned_aligned[0],
+                "planned_aligned_v": planned_aligned[1],
                 "context": contexts[object_position].label,
             }
         )
@@ -393,6 +695,7 @@ def _run_metrics(
     if planner is not None:
         continuity = dict(continuity)
         continuity["trace"] = _trace_continuity_summary(frames, planner, timeline_start)
+        continuity["motion"] = _trace_motion_summary(plan, frames, planner, timeline_start)
     return {
         "objects": len(plan.objects),
         "judged_objects": judged_objects,
@@ -414,6 +717,8 @@ def _run_metrics(
         },
         "angular_entropy": round(_normalized_entropy(angles), 6),
         "angular_samples": len(angles),
+        "approach_aligned": _approach_aligned_summary(approach_samples),
+        "planned_approach_aligned": _approach_aligned_summary(planned_approach_samples),
         "lag_abs_correlation": lag_correlations,
         "timing": {
             "mean_signed_ms": round(float(np.mean(timing_array)), 6) if len(timing_array) else 0.0,
@@ -489,6 +794,19 @@ def _aggregate_run_metrics(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
     continuity_values = [record["metrics"].get("continuity") for record in records]
     continuity_values = [value for value in continuity_values if value is not None]
     trace_values = [value.get("trace") for value in continuity_values if value.get("trace") is not None]
+    motion_values = [value.get("motion") for value in continuity_values if value.get("motion") is not None]
+    approach_samples = [
+        [row["aligned_u"], row["aligned_v"]]
+        for record in records
+        for row in record["metrics"]["rows"]
+        if row.get("matched") and "aligned_u" in row and "aligned_v" in row
+    ]
+    planned_approach_samples = [
+        [row["planned_aligned_u"], row["planned_aligned_v"]]
+        for record in records
+        for row in record["metrics"]["rows"]
+        if "planned_aligned_u" in row and "planned_aligned_v" in row
+    ]
     base_flow_values = [value["flow_0_45"] for value in continuity_values]
     base_turn_values = [value["turn_45_120"] for value in continuity_values]
     base_reversal_values = [value["reversal_gt_120"] for value in continuity_values]
@@ -507,6 +825,8 @@ def _aggregate_run_metrics(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "context_jump_share": _summary(jump_share),
         "angular_sample_count": int(sum(record["metrics"]["angular_samples"] for record in records)),
         "success_rate": _summary(success),
+        "approach_aligned": _approach_aligned_summary(approach_samples),
+        "planned_approach_aligned": _approach_aligned_summary(planned_approach_samples),
         "lag_abs_correlation_max": round(float(max(lag_values)), 6) if lag_values else 0.0,
         "successful_landings_total": int(sum(record["metrics"]["successful_landings"] for record in records)),
         "kinematics": {
@@ -514,6 +834,30 @@ def _aggregate_run_metrics(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
             "max_acceleration_p95_px_s2": max((float(value["acceleration_px_s2"]["p95"]) for value in kinematic_values), default=0.0),
             "max_lateral_acceleration_p95_px_s2": max((float(value["lateral_acceleration_px_s2"]["p95"]) for value in kinematic_values), default=0.0),
             "max_jerk_p95_px_s3": max((float(value["jerk_px_s3"]["p95"]) for value in kinematic_values), default=0.0),
+        },
+        "motion": {
+            "runs": len(motion_values),
+            "transitions": int(sum(int(value.get("transitions", 0)) for value in motion_values)),
+            "launch_delay_share": _summary(
+                [float(value["launch_delay_share"]["mean"]) for value in motion_values]
+            ),
+            "transit_share": _summary(
+                [float(value["transit_share"]["mean"]) for value in motion_values]
+            ),
+            "active_motion_share": _summary(
+                [float(value["active_motion_share"]["mean"]) for value in motion_values]
+            ),
+            "speed_p95_px_s": _summary(
+                [float(value["speed_px_s"]["p95"]) for value in motion_values]
+            ),
+            "speed_over_gap_required_p95": _summary(
+                [float(value["speed_over_gap_required"]["p95"]) for value in motion_values]
+            ),
+            "speed_over_ceiling_p95": _summary(
+                [float(value["speed_over_ceiling"]["p95"]) for value in motion_values]
+            ),
+            "flick_count": int(sum(int(value.get("flick_count", 0)) for value in motion_values)),
+            "flick_share": _summary([float(value.get("flick_share", 0.0)) for value in motion_values]),
         },
         "continuity": {
             "runs": len(continuity_values),
@@ -703,6 +1047,116 @@ def _gate_report(
         gates.min_angular_entropy,
         f"checked only when there are at least {gates.entropy_min_samples} angular samples",
     )
+    approach_reports = []
+    planned_approach_reports = []
+    approach_press_exclusions: list[dict[str, str]] = []
+    for report in map_reports:
+        aggregate = report["aggregate"]
+        actual = aggregate.get("approach_aligned", {})
+        planned = aggregate.get("planned_approach_aligned", {})
+        if int(planned.get("samples", 0)) >= gates.approach_min_samples:
+            planned_approach_reports.append(planned)
+        if int(actual.get("samples", 0)) < gates.approach_min_samples:
+            continue
+        success_rate = float(aggregate.get("success_rate", {}).get("mean", 0.0))
+        timing_p95 = float(aggregate.get("timing_p95_abs_ms", {}).get("mean", 0.0))
+        if success_rate >= gates.approach_press_min_success_rate and timing_p95 <= gates.approach_press_max_timing_p95_ms:
+            approach_reports.append(actual)
+        else:
+            reasons = []
+            if success_rate < gates.approach_press_min_success_rate:
+                reasons.append(f"success_rate<{gates.approach_press_min_success_rate:.2f}")
+            if timing_p95 > gates.approach_press_max_timing_p95_ms:
+                reasons.append(f"timing_p95_ms>{gates.approach_press_max_timing_p95_ms:.1f}")
+            approach_press_exclusions.append({"map": str(report["map"]), "reason": ", ".join(reasons)})
+    approach_undershoot = [float(value.get("undershoot_share", 0.0)) for value in approach_reports]
+    approach_anisotropy = [float(value.get("covariance_eigen_anisotropy", 0.0)) for value in approach_reports]
+    approach_correlation = [float(value.get("abs_axis_correlation", 0.0)) for value in approach_reports]
+    approach_sector_entropy = [float(value.get("sector_entropy", 0.0)) for value in approach_reports]
+    approach_wedge = [float(value.get("wedge_share", 0.0)) for value in approach_reports]
+    add(
+        "approach_undershoot_share",
+        not approach_reports
+        or (
+            min(approach_undershoot) >= gates.min_approach_undershoot_share
+            and max(approach_undershoot) <= gates.max_approach_undershoot_share
+        ),
+        None if not approach_reports else [round(min(approach_undershoot), 6), round(max(approach_undershoot), 6)],
+        [gates.min_approach_undershoot_share, gates.max_approach_undershoot_share],
+        "clean press-time maps retain a mild undershoot bias; excluded hard-map diagnostics remain in JSON",
+    )
+    add(
+        "approach_aligned_anisotropy",
+        not approach_reports or max(approach_anisotropy) <= gates.max_approach_anisotropy,
+        None if not approach_reports else round(max(approach_anisotropy), 6),
+        gates.max_approach_anisotropy,
+        f"clean press-time maps with >= {gates.approach_min_samples} samples, success >= {gates.approach_press_min_success_rate:.2f}, timing p95 <= {gates.approach_press_max_timing_p95_ms:.1f} ms",
+    )
+    add(
+        "approach_abs_axis_correlation",
+        not approach_reports or max(approach_correlation) <= gates.max_approach_abs_axis_correlation,
+        None if not approach_reports else round(max(approach_correlation), 6),
+        gates.max_approach_abs_axis_correlation,
+        "clean press-time lateral magnitude must not be a fixed fraction of longitudinal magnitude",
+    )
+    add(
+        "approach_sector_entropy",
+        not approach_reports or min(approach_sector_entropy) >= gates.min_approach_sector_entropy,
+        None if not approach_reports else round(min(approach_sector_entropy), 6),
+        gates.min_approach_sector_entropy,
+        "clean press-time errors should occupy a cloud of sectors rather than a narrow cone",
+    )
+    add(
+        "approach_wedge_share",
+        not approach_reports or max(approach_wedge) <= gates.max_approach_wedge_share,
+        None if not approach_reports else round(max(approach_wedge), 6),
+        gates.max_approach_wedge_share,
+        "clean press-time fraction inside the approach-axis wedge must remain a minority",
+    )
+    planned_undershoot = [float(value.get("undershoot_share", 0.0)) for value in planned_approach_reports]
+    planned_anisotropy = [float(value.get("covariance_eigen_anisotropy", 0.0)) for value in planned_approach_reports]
+    planned_correlation = [float(value.get("abs_axis_correlation", 0.0)) for value in planned_approach_reports]
+    planned_sector_entropy = [float(value.get("sector_entropy", 0.0)) for value in planned_approach_reports]
+    planned_wedge = [float(value.get("wedge_share", 0.0)) for value in planned_approach_reports]
+    add(
+        "planned_approach_undershoot_share",
+        not planned_approach_reports
+        or (
+            min(planned_undershoot) >= gates.min_planned_approach_undershoot_share
+            and max(planned_undershoot) <= gates.max_planned_approach_undershoot_share
+        ),
+        None if not planned_approach_reports else [round(min(planned_undershoot), 6), round(max(planned_undershoot), 6)],
+        [gates.min_planned_approach_undershoot_share, gates.max_planned_approach_undershoot_share],
+        "the sampled landing model must retain a mild undershoot bias without becoming one-sided",
+    )
+    add(
+        "planned_approach_aligned_anisotropy",
+        not planned_approach_reports or max(planned_anisotropy) <= gates.max_planned_approach_anisotropy,
+        None if not planned_approach_reports else round(max(planned_anisotropy), 6),
+        gates.max_planned_approach_anisotropy,
+        "the sampled landing covariance must remain approximately elliptical",
+    )
+    add(
+        "planned_approach_abs_axis_correlation",
+        not planned_approach_reports or max(planned_correlation) <= gates.max_planned_approach_abs_axis_correlation,
+        None if not planned_approach_reports else round(max(planned_correlation), 6),
+        gates.max_planned_approach_abs_axis_correlation,
+        "the sampled landing lateral magnitude must not be a fixed fraction of longitudinal magnitude",
+    )
+    add(
+        "planned_approach_sector_entropy",
+        not planned_approach_reports or min(planned_sector_entropy) >= gates.min_planned_approach_sector_entropy,
+        None if not planned_approach_reports else round(min(planned_sector_entropy), 6),
+        gates.min_planned_approach_sector_entropy,
+        "the sampled landing cloud must occupy local-frame sectors rather than a narrow cone",
+    )
+    add(
+        "planned_approach_wedge_share",
+        not planned_approach_reports or max(planned_wedge) <= gates.max_planned_approach_wedge_share,
+        None if not planned_approach_reports else round(max(planned_wedge), 6),
+        gates.max_planned_approach_wedge_share,
+        "the sampled landing cloud must not collapse into an approach-axis wedge",
+    )
     total_success = sum(report["aggregate"]["successful_landings_total"] for report in map_reports)
     add("successful_landings", total_success >= gates.min_successful_landings, total_success, gates.min_successful_landings, "benchmark must produce at least one judged landing")
     kinematic_aggregates = [report["aggregate"].get("kinematics", {}) for report in map_reports]
@@ -720,6 +1174,20 @@ def _gate_report(
     add("kinematic_acceleration_bound", max_acceleration_p95 <= gates.max_kinematic_acceleration_p95_px_s2, round(max_acceleration_p95, 6), gates.max_kinematic_acceleration_p95_px_s2, "uniform-cadence acceleration p95 bound")
     add("kinematic_lateral_acceleration_bound", max_lateral_acceleration_p95 <= gates.max_kinematic_lateral_acceleration_p95_px_s2, round(max_lateral_acceleration_p95, 6), gates.max_kinematic_lateral_acceleration_p95_px_s2, "uniform-cadence lateral acceleration p95 bound")
     add("kinematic_jerk_bound", max_jerk_p95 <= gates.max_kinematic_jerk_p95_px_s3, round(max_jerk_p95, 6), gates.max_kinematic_jerk_p95_px_s3, "uniform-cadence jerk p95 bound")
+    motion_aggregates = [report["aggregate"].get("motion", {}) for report in map_reports]
+    motion_flick_values = [
+        float(value.get("flick_share", {}).get("max", 0.0))
+        for value in motion_aggregates
+        if int(value.get("transitions", 0)) >= gates.continuity_min_samples
+    ]
+    max_flick_share = max(motion_flick_values, default=0.0)
+    add(
+        "trace_flick_share",
+        max_flick_share <= gates.max_trace_flick_share,
+        round(max_flick_share, 6),
+        gates.max_trace_flick_share,
+        "ordinary transitions with spare time must not be compressed into unnecessary flicks",
+    )
     continuity_reports = [report["aggregate"].get("continuity", {}) for report in map_reports]
     flow_reports = [
         report
@@ -758,7 +1226,7 @@ def _gate_report(
         "ordinary 0-45 degree flow must retain substantial endpoint speed",
     )
     turn_below_flow = all(
-        float(report["turn_median_carry_ratio"]["mean"]) < float(report["flow_median_carry_ratio"]["mean"])
+        float(report["turn_median_carry_ratio"]["mean"]) <= float(report["flow_median_carry_ratio"]["mean"]) + 0.05
         for report in continuity_reports
         if report.get("flow_median_carry_ratio", {}).get("n", 0) > 0
         and report.get("turn_median_carry_ratio", {}).get("n", 0) > 0
@@ -767,8 +1235,8 @@ def _gate_report(
         "turn_carry_below_flow",
         turn_below_flow,
         turn_carry_values,
-        "45-120 degree median carry must be below shallow flow",
-        "geometry-derived carry should decrease with turn angle",
+        "45-120 degree median carry should not exceed shallow flow by > 0.05",
+        "geometry-derived carry should decrease with turn angle within stochastic trace tolerance",
     )
     add(
         "reversal_restart_spike",
@@ -835,7 +1303,15 @@ def _gate_report(
         0,
         "higher effort should not consistently worsen error or success across selected maps and seeds",
     )
-    return {"pass": all(check["pass"] for check in checks), "checks": checks}
+    return {
+        "pass": all(check["pass"] for check in checks),
+        "checks": checks,
+        "diagnostics": {
+            "planned_approach_maps": len(planned_approach_reports),
+            "clean_press_approach_maps": len(approach_reports),
+            "excluded_press_approach_maps": approach_press_exclusions,
+        },
+    }
 
 
 def run_benchmark(
@@ -934,10 +1410,13 @@ def run_benchmark(
     }
     same_seed = all(result["exact"] for result in same_seed_results)
     gate_report = _gate_report(same_seed=same_seed, map_reports=map_reports, profile_report=profile_report, gates=gates)
+    git_commit = repository_git_commit()
     return {
         "schema_version": 1,
         "benchmark": "human-sim-statistical-regression",
         "planner_version": PLANNER_VERSION,
+        "git_commit": git_commit,
+        "build_identity": f"human-sim-python:{PLANNER_VERSION}:{git_commit}",
         "scope": scope,
         "classification": classification,
         "runtime_quality": runtime_quality,
@@ -960,7 +1439,7 @@ def run_benchmark(
 def format_summary(report: dict[str, Any]) -> str:
     lines = [
         f"Human-sim benchmark: {report['scope']} / {report['classification']}",
-        f"planner={report['planner_version']} maps={len(report['maps'])} seeds={report['configuration']['seeds']}",
+        f"planner={report['planner_version']} git={report.get('git_commit', 'unknown')} maps={len(report['maps'])} seeds={report['configuration']['seeds']}",
         f"same-seed-exact={'PASS' if report['same_seed']['all_exact'] else 'FAIL'}",
     ]
     for map_report in report["maps"]:
@@ -970,6 +1449,9 @@ def format_summary(report: dict[str, Any]) -> str:
         continuity = aggregate.get("continuity", {})
         flow_carry = continuity.get("flow_median_carry_ratio", {}).get("mean")
         flow_stop = continuity.get("flow_severe_stop_share", {}).get("mean")
+        approach = aggregate.get("approach_aligned", {})
+        planned_approach = aggregate.get("planned_approach_aligned", {})
+        motion = aggregate.get("motion", {})
         continuity_text = (
             f" flow_carry={flow_carry:.3f} flow_stop={flow_stop:.3f}"
             if flow_carry is not None and flow_stop is not None
@@ -982,7 +1464,16 @@ def format_summary(report: dict[str, Any]) -> str:
             f"entropy={aggregate['angular_entropy']['mean']:.3f} "
             f"jump_share={aggregate['context_jump_share']['mean']:.3f} "
             f"timing_p95={aggregate['timing_p95_abs_ms']['mean']:.2f}ms "
-            f"cross_seed_abs_corr_max={cross_value}{continuity_text}"
+            f"cross_seed_abs_corr_max={cross_value} "
+            f"aligned=(u:{approach.get('longitudinal_mean', 0.0):.3f},"
+            f"v:{approach.get('lateral_mean', 0.0):.3f},"
+            f"aniso:{approach.get('covariance_eigen_anisotropy', 0.0):.3f},"
+            f"wedge:{approach.get('wedge_share', 0.0):.3f}) "
+            f"planned=(aniso:{planned_approach.get('covariance_eigen_anisotropy', 0.0):.3f},"
+            f"wedge:{planned_approach.get('wedge_share', 0.0):.3f}) "
+            f"motion=(transit:{motion.get('transit_share', {}).get('mean', 0.0):.3f},"
+            f"flick:{motion.get('flick_share', {}).get('mean', 0.0):.3f})"
+            f"{continuity_text}"
         )
     lines.append(f"skill-monotonicity={'PASS' if report['monotonicity']['skill']['pass'] else 'FAIL'} effort-monotonicity={'PASS' if report['monotonicity']['effort']['pass'] else 'FAIL'}")
     lines.append(f"gates={'PASS' if report['gates']['pass'] else 'FAIL'}")

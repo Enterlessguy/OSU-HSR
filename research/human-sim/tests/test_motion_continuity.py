@@ -29,8 +29,8 @@ def _write_circle_flow_map(path):
         {
             "index": index,
             "kind": "circle",
-            "effective_start_time_ms": 2000 + index * 160,
-            "effective_end_time_ms": 2000 + index * 160,
+            "effective_start_time_ms": 2000 + index * 200,
+            "effective_end_time_ms": 2000 + index * 200,
             "position": {"x": x, "y": y},
             "radius": 32,
         }
@@ -100,3 +100,38 @@ def test_motion_state_is_reproducible_and_noise_does_not_reset_per_segment(tmp_p
     assert first.motion_state.last_timestamp_ms >= plan.objects[0].start_time_ms - 1500.0
     assert np.linalg.norm(first.motion_state.ou_offset) >= 0.0
     assert first.continuity_stats["correction_share"] < 0.75
+
+
+def test_subsample_event_keeps_hermite_endpoint_exact_and_timestamps_increasing(tmp_path):
+    map_path = tmp_path / "subsample.map.ndjson.gz"
+    objects = [
+        {
+            "index": index,
+            "kind": "circle",
+            "effective_start_time_ms": 2000 + index,
+            "effective_end_time_ms": 2000 + index,
+            "position": {"x": 100 + 50 * index, "y": 192},
+            "radius": 32,
+        }
+        for index in range(5)
+    ]
+    value = {
+        "schema_version": 1,
+        "beatmap_sha256": "a" * 64,
+        "beatmap_md5": "b" * 32,
+        "clock_rate": 1.0,
+        "mods": [],
+        "metadata": {"title": "subsample boundary fixture"},
+        "objects": objects,
+    }
+    with gzip.open(map_path, "wt", encoding="utf-8") as stream:
+        stream.write(json.dumps(value) + "\n")
+
+    plan = load_map_plan(map_path)
+    planner = HumanTracePlanner(plan, HumanProfile(99.5, 42, 500, skill_level=50, effort_level=80))
+    frames = planner.generate()
+
+    assert planner.continuity_stats["base_boundary_position_error_px"] <= 1e-4
+    assert planner.continuity_stats["base_shared_velocity_error_px_s"] <= 1e-5
+    assert planner.continuity_stats["base_shared_acceleration_error_px_s2"] <= 1e-3
+    assert all(left.time_us < right.time_us for left, right in zip(frames, frames[1:]))

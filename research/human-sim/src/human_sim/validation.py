@@ -51,4 +51,11 @@ def validate_trace(path: str | Path) -> dict[str, float | int | str]:
         "duration_us": last_time,
         "max_speed_osu_px_s": round(max_speed, 3),
         "profile_percentile": float(header["profile_percentile"]),
+        "planner_version": str(header.get("planner_version", "unknown")),
+        "git_commit": str(header.get("git_commit", "unknown")),
+        "build_identity": str(header.get("build_identity", "unknown")),
+        "identity_complete": all(
+            bool(header.get(key))
+            for key in ("planner_version", "git_commit", "build_identity")
+        ),
     }

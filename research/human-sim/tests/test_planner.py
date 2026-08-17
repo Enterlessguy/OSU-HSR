@@ -82,6 +82,9 @@ def test_trace_is_monotonic_and_releases_keys(tmp_path):
     result = validate_trace(trace_path)
     assert result["status"] == "valid"
     assert result["frames"] > 1000
+    assert result["identity_complete"]
+    assert result["planner_version"].startswith("timing-sync-v2.")
+    assert len(result["git_commit"]) >= 7
 
 
 def test_repeat_slider_samples_are_not_repeated_twice(tmp_path):
