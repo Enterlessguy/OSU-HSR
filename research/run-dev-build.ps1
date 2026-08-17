@@ -252,7 +252,7 @@ try {
     $humanSim = Join-Path $root "research\human-sim\.venv\Scripts\human-sim.exe"
     $client = Join-Path $root "osu.Desktop\bin\Debug\net8.0\osu!.exe"
     $runnerProject = Join-Path $root "research\HumanSim.Runner\HumanSim.Runner.csproj"
-    $runnerDll = Join-Path $root "research\HumanSim.Runner\bin\Debug\net8.0\HumanSim.Runner.dll"
+    $runnerDll = Join-Path $root "research\HumanSim.Runner\bin\Debug\net8.0-windows\HumanSim.Runner.dll"
     foreach ($required in @($dotnet, $python, $humanSim)) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
             throw "Required local tool is missing: $required"

@@ -101,3 +101,47 @@ rejects cache entries whose planner or checkout commit differs. Existing
 v2.11/v2.12 traces remain useful raw evidence, but their missing identity is
 reported by validation and they cannot be accepted as current runtime cache
 entries.
+
+## v2.13 launcher and short benchmark validation (2026-08-17)
+
+Main was fast-forwarded to `ec40d456d312626b6e1862f4a4898d328dfc0282`
+(`timing-sync-v2.13`). The desktop shortcut was corrected to invoke the main
+checkout's `research/run-dev-build.ps1 -Update`; it had still referenced the
+temporary Codex worktree. Launcher validation also found and fixed the runner
+artifact path: `HumanSim.Runner` targets `net8.0-windows`, not `net8.0`.
+
+The launcher's complete pre-launch toolchain was then exercised directly:
+
+- the osu! research client and MapExporter, ReplayExtractor, and Runner builds
+  completed with zero warnings and zero errors using local .NET SDK 8.0.100;
+- the editable Python package and test dependencies installed successfully in
+  the project virtual environment;
+- source, Python runtime, and Runner all reported `timing-sync-v2.13`;
+- the client executable existed at the shortcut's configured icon/launch path.
+
+Focused planner, continuity, and benchmark tests passed `23/23`. A short
+technical benchmark used the exact Haiboku plan at skill 50, effort 90, 1000 Hz,
+seeds 41-43, and monotonicity seed 42. The machine-readable and text reports are
+written locally as `output/analysis/v213-haiboku-short-benchmark.json` and
+`.txt` (generated reports remain ignored by Git).
+
+The report passed every gate. Across 1,830 object opportunities it produced
+1,825 successful matched landings (99.73%, five misses). Planned local-frame
+errors had anisotropy 1.050, wedge share 0.233, absolute-axis correlation 0.073,
+sector entropy 0.987, and undershoot share 0.619. Matched press-time errors had
+anisotropy 1.102, wedge share 0.244, absolute-axis correlation 0.094, sector
+entropy 0.985, and undershoot share 0.631. These values are consistent with a
+mildly undershoot-biased elliptical cloud rather than the former approach-axis
+arrow.
+
+Motion used a mean 60.0% transit share with 93.9% active motion, p95 speed about
+1,601 px/s, and zero unnecessary flicks among 149 measured transitions. Exact
+base-path position, velocity, and acceleration continuity gates passed. The
+maximum uniform-cadence kinematic summaries were 5,422 px/s speed, 161,558
+px/s^2 acceleration p95, 68,926 px/s^2 lateral acceleration p95, and 76.36
+million px/s^3 jerk p95, all within the deliberately broad regression limits.
+
+This run is correctly classified `planner-only/not-runtime-validated`: it
+validates generated behavior and the launch build/identity chain, but a user's
+interactive play session is still required to collect Windows dispatch,
+focus, heartbeat, and SendInput runtime evidence.
