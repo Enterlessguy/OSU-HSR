@@ -11,7 +11,7 @@ from .schemas import HumanProfile, MapObject, MapPlan, TraceFrame
 
 # Bump when trace-generation behaviour changes so the runner's content-addressed
 # trace cache is invalidated (the configuration hash includes this string).
-PLANNER_VERSION = "timing-sync-v2.13"
+PLANNER_VERSION = "timing-sync-v2.14"
 
 
 @dataclass(frozen=True)
@@ -376,14 +376,49 @@ class HumanTracePlanner:
             return
         time_ms, position = points[-1]
         state = self.motion_state
-        previous_velocity = state.velocity.copy()
         state.position = np.asarray(position, dtype=float).copy()
-        if len(points) >= 2:
-            previous_time, previous_position = points[-2]
-            dt_s = max((float(time_ms) - float(previous_time)) / 1000.0, 1e-6)
-            state.velocity = (np.asarray(position, dtype=float) - np.asarray(previous_position, dtype=float)) / dt_s
-            if np.all(np.isfinite(state.velocity)):
-                state.acceleration = (state.velocity - previous_velocity) / dt_s
+        tail: list[tuple[float, np.ndarray]] = []
+        cutoff_ms = float(time_ms) - 20.0
+        newest_tail_time = float("inf")
+        for sample_time, sample_position in reversed(points):
+            sample_time = float(sample_time)
+            if sample_time > float(time_ms) or sample_time >= newest_tail_time:
+                continue
+            tail.append((sample_time, np.asarray(sample_position, dtype=float)))
+            newest_tail_time = sample_time
+            if sample_time <= cutoff_ms or len(tail) >= 32:
+                break
+        tail.reverse()
+        if len(tail) >= 3:
+            sample_times = np.asarray([(sample_time - float(time_ms)) / 1000.0 for sample_time, _ in tail])
+            sample_positions = np.asarray([sample_position for _, sample_position in tail])
+            displacement = sample_positions - state.position
+            design = np.column_stack((sample_times, 0.5 * sample_times * sample_times))
+            coefficients, *_ = np.linalg.lstsq(design, displacement, rcond=None)
+            velocity = coefficients[0]
+            acceleration = coefficients[1]
+        elif len(tail) == 2:
+            dt_s = max((tail[-1][0] - tail[-2][0]) / 1000.0, 1e-6)
+            velocity = (tail[-1][1] - tail[-2][1]) / dt_s
+            acceleration = np.zeros(2)
+        else:
+            velocity = np.zeros(2)
+            acceleration = np.zeros(2)
+
+        velocity_limit = max(2_400.0, self._speed_ceiling(80.0) * 1.6)
+        velocity_length = float(np.linalg.norm(velocity))
+        if not np.all(np.isfinite(velocity)):
+            velocity = np.zeros(2)
+        elif velocity_length > velocity_limit:
+            velocity *= velocity_limit / velocity_length
+        acceleration_limit = max(22_000.0, self._speed_ceiling(80.0) * 12.0)
+        acceleration_length = float(np.linalg.norm(acceleration))
+        if not np.all(np.isfinite(acceleration)):
+            acceleration = np.zeros(2)
+        elif acceleration_length > acceleration_limit:
+            acceleration *= acceleration_limit / acceleration_length
+        state.velocity = velocity
+        state.acceleration = acceleration
         state.last_timestamp_ms = float(time_ms)
         self.wander = state.wander.copy()
         self._last_waypoint_position = state.position.copy()

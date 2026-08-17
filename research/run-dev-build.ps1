@@ -222,18 +222,20 @@ try {
 
     if ($Update) {
         if ($identity.Dirty) {
-            throw "-Update requires a clean checkout; refusing to overwrite local work."
+            Write-Host "Update skipped: checkout has local changes. Building and launching the local checkout without overwriting them." -ForegroundColor Yellow
         }
-        $upstream = ([string](Invoke-GitChecked @("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"))).Trim()
-        if ([string]::IsNullOrWhiteSpace($upstream)) {
-            throw "-Update requires a configured upstream branch; none is available."
+        else {
+            $upstream = ([string](Invoke-GitChecked @("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"))).Trim()
+            if ([string]::IsNullOrWhiteSpace($upstream)) {
+                throw "-Update requires a configured upstream branch; none is available."
+            }
+            Write-Host "Updating only by fetch + fast-forward from $upstream..." -ForegroundColor Yellow
+            Invoke-GitChecked @("fetch", "--prune") | Out-Host
+            Invoke-GitChecked @("merge", "--ff-only", $upstream) | Out-Host
+            $identity = Get-CheckoutIdentity
+            if ($identity.Dirty) { throw "Checkout became dirty after fast-forward; refusing to launch." }
+            Write-Host "Updated checkout: branch=$($identity.Branch) commit=$($identity.Commit) planner=$($identity.PlannerVersion)" -ForegroundColor Green
         }
-        Write-Host "Updating only by fetch + fast-forward from $upstream..." -ForegroundColor Yellow
-        Invoke-GitChecked @("fetch", "--prune") | Out-Host
-        Invoke-GitChecked @("merge", "--ff-only", $upstream) | Out-Host
-        $identity = Get-CheckoutIdentity
-        if ($identity.Dirty) { throw "Checkout became dirty after fast-forward; refusing to launch." }
-        Write-Host "Updated checkout: branch=$($identity.Branch) commit=$($identity.Commit) planner=$($identity.PlannerVersion)" -ForegroundColor Green
     }
     elseif ($identity.Dirty) {
         Write-Host "Checkout is dirty; continuing without update because no -Update was requested." -ForegroundColor Yellow

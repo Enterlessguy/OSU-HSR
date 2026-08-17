@@ -3,16 +3,18 @@ from __future__ import annotations
 import gzip
 import json
 import math
+from types import SimpleNamespace
 
 from human_sim.benchmark import (
     _approach_aligned_summary,
     _kinematic_summary,
     _monotonicity,
+    _trace_motion_summary,
     format_summary,
     run_benchmark,
     write_report,
 )
-from human_sim.schemas import TraceFrame
+from human_sim.schemas import MapPlan, TraceFrame
 
 
 def _write_map(path):
@@ -104,6 +106,64 @@ def test_kinematics_resample_variable_event_frames():
     result = _kinematic_summary(frames, sample_rate_hz=500)
     assert result["resampled_frames"] == 2
     assert result["jerk_px_s3"]["n"] == 0
+    assert "raw_acceleration_px_s2" in result
+
+
+def test_trace_motion_detects_slider_handoff_overshoot_and_return():
+    plan = MapPlan.from_dict(
+        {
+            "schema_version": 1,
+            "beatmap_sha256": "a" * 64,
+            "beatmap_md5": "b" * 32,
+            "clock_rate": 1.0,
+            "mods": [],
+            "metadata": {"title": "yank fixture"},
+            "objects": [
+                {
+                    "index": 0,
+                    "kind": "slider",
+                    "effective_start_time_ms": 1000,
+                    "effective_end_time_ms": 1200,
+                    "position": {"x": 100, "y": 100},
+                    "end_position": {"x": 100, "y": 100},
+                    "path_samples": [{"x": 100, "y": 100}, {"x": 100, "y": 100}],
+                    "radius": 32,
+                },
+                {
+                    "index": 1,
+                    "kind": "circle",
+                    "effective_start_time_ms": 1400,
+                    "effective_end_time_ms": 1400,
+                    "position": {"x": 200, "y": 100},
+                    "radius": 32,
+                },
+            ],
+        }
+    )
+    timeline_start_ms = -500.0
+    samples = [
+        (900.0, 100.0, 100.0),
+        (1200.0, 100.0, 100.0),
+        (1260.0, 100.0, 250.0),
+        (1320.0, 100.0, 300.0),
+        (1400.0, 200.0, 100.0),
+        (1500.0, 200.0, 100.0),
+    ]
+    frames = [
+        TraceFrame(int(round((time_ms - timeline_start_ms) * 1000.0)), x, y, False, False)
+        for time_ms, x, y in samples
+    ]
+    planner = SimpleNamespace(
+        profile=SimpleNamespace(sample_rate_hz=500),
+        _speed_ceiling=lambda _distance: 4_000.0,
+    )
+
+    result = _trace_motion_summary(plan, frames, planner, timeline_start_ms)
+
+    assert result["slider_handoffs_expected"] == 1
+    assert result["slider_handoffs_evaluated"] == 1
+    assert result["yank_count"] == 1
+    assert result["corridor_deviation_ratio"]["max"] > 1.25
 
 
 def test_approach_summary_detects_a_wedge_and_accepts_a_cloud():

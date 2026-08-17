@@ -49,6 +49,52 @@ def _write_circle_flow_map(path):
         stream.write(json.dumps(value) + "\n")
 
 
+def _write_slider_handoff_map(path):
+    slider_path = [
+        {"x": 220.0, "y": 100.0 + 10.0 * index}
+        for index in range(21)
+    ]
+    objects = [
+        {
+            "index": 0,
+            "kind": "circle",
+            "effective_start_time_ms": 2000,
+            "effective_end_time_ms": 2000,
+            "position": {"x": 100, "y": 100},
+            "radius": 32,
+        },
+        {
+            "index": 1,
+            "kind": "slider",
+            "effective_start_time_ms": 2300,
+            "effective_end_time_ms": 2700,
+            "position": {"x": 220, "y": 100},
+            "end_position": {"x": 220, "y": 300},
+            "path_samples": slider_path,
+            "radius": 32,
+        },
+        {
+            "index": 2,
+            "kind": "circle",
+            "effective_start_time_ms": 2820,
+            "effective_end_time_ms": 2820,
+            "position": {"x": 160, "y": 190},
+            "radius": 32,
+        },
+    ]
+    value = {
+        "schema_version": 1,
+        "beatmap_sha256": "1" * 64,
+        "beatmap_md5": "2" * 32,
+        "clock_rate": 1.0,
+        "mods": [],
+        "metadata": {"title": "slider handoff fixture"},
+        "objects": objects,
+    }
+    with gzip.open(path, "wt", encoding="utf-8") as stream:
+        stream.write(json.dumps(value) + "\n")
+
+
 def test_quintic_hermite_matches_position_velocity_and_acceleration_endpoints():
     p0 = np.array([10.0, 20.0])
     v0 = np.array([100.0, -20.0])
@@ -135,3 +181,17 @@ def test_subsample_event_keeps_hermite_endpoint_exact_and_timestamps_increasing(
     assert planner.continuity_stats["base_shared_velocity_error_px_s"] <= 1e-5
     assert planner.continuity_stats["base_shared_acceleration_error_px_s2"] <= 1e-3
     assert all(left.time_us < right.time_us for left, right in zip(frames, frames[1:]))
+
+
+def test_slider_handoff_uses_tail_kinematics_without_derivative_explosion(tmp_path):
+    map_path = tmp_path / "slider-handoff.map.ndjson.gz"
+    _write_slider_handoff_map(map_path)
+    plan = load_map_plan(map_path)
+    planner = HumanTracePlanner(plan, HumanProfile(99.5, 42, 1000, skill_level=50, effort_level=80))
+    planner.generate()
+
+    handoff = next(segment for segment in planner.motion_segments if segment["object_index"] == 2)
+    start_acceleration = np.linalg.norm(np.asarray(handoff["start_acceleration"], dtype=float))
+
+    assert start_acceleration < 100_000.0
+    assert handoff["base_speed_max_px_s"] <= handoff["profile_speed_limit_px_s"] * 1.05

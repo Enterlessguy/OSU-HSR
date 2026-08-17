@@ -145,3 +145,57 @@ This run is correctly classified `planner-only/not-runtime-validated`: it
 validates generated behavior and the launch build/identity chain, but a user's
 interactive play session is still required to collect Windows dispatch,
 focus, heartbeat, and SendInput runtime evidence.
+
+## v2.14 slider-handoff jerk postmortem (2026-08-17)
+
+The exported Haiboku replay disproved the v2.13 benchmark result. At 53,331 ms,
+58 ms before circle 203, the cursor moved 76.3 px in one 18 ms replay frame
+immediately after slider 202. Its velocity reversed by 169.9 degrees, with a
+535,947 px/s² finite-difference acceleration. Equivalent overshoot/return
+events recurred after other slider tails. The old benchmark reported zero
+flicks because `_trace_motion_summary` evaluated only circle-to-circle
+transitions, while broad filtered-p95 kinematic gates hid rare impulses. The
+user's criticism was therefore correct.
+
+The root cause was a derivative handoff error. `_sync_motion_state_from_points`
+computed the new slider-tail velocity from its final two samples and then used
+`a_start = (v_tail - v_previous_mode) / delta_t`. The previous velocity belonged
+to another motion primitive and `delta_t` was usually about 1 ms. This amplified
+a normal cross-mode velocity difference into start accelerations above
+1,000,000 px/s². The next quintic Hermite segment inherited that acceleration.
+Its endpoint-only derivative scaling could not reduce the start derivative, so
+the curve travelled away from the target before the final speed clamp folded it
+back, producing the visible yank.
+
+v2.14 estimates both derivatives from one physical tail. For samples in the
+final 20 ms, with local times `t_i <= 0` and final position `p_0`, it solves the
+two-axis least-squares model `p_i - p_0 = v_tail*t_i + 0.5*a_tail*t_i²`.
+Two-sample tails fall back to finite-difference velocity and zero acceleration.
+Non-finite values are rejected, and velocity/acceleration are bounded by the
+same skill-conditioned slider and waypoint envelopes used elsewhere. A
+dedicated slider-to-circle test failed on v2.13 at 500,690 px/s² and passes on
+v2.14 below 100,000 px/s² with the base path inside its speed envelope.
+
+The benchmark now retains unfiltered uniform-cadence derivative diagnostics and
+gates the maximum velocity-vector jump. More importantly, every eligible
+2-600 ms non-spinner transition is measured, including slider-to-circle,
+slider-to-slider, and circle-to-slider. It records travelled/direct path ratio,
+endpoint-corridor deviation, projection beyond the endpoint segment, maximum
+direction reversal, yank count/share, and explicit slider-handoff coverage.
+The 600 ms ceiling separates target movement from intentional idle doodles.
+
+| Metric | v2.13 | v2.14 |
+| --- | ---: | ---: |
+| evaluated ordinary transitions | 602 | 602 |
+| slider-handoff coverage | 100% | 100% |
+| detected yanks | 81 (13.455%) | 0 (0.000%) |
+| path-length ratio p95 | 4.406 | 1.209 |
+| corridor-deviation ratio p95 | 1.773 | 0.243 |
+| maximum projection excursion ratio | 8.752 | 0.486 |
+
+The revised one-map technical benchmark passes all gates. It evaluates all 602
+ordinary transitions and every eligible slider handoff, reports zero
+unnecessary flicks and zero yanks, a maximum raw velocity-vector jump of
+6,092 px/s, and a filtered speed maximum of 5,421 px/s. This remains
+planner-only evidence; the old replay cannot be repaired and a new interactive
+replay is required to verify runtime dispatch and subjective cursor feel.

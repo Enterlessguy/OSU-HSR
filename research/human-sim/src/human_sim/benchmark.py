@@ -51,6 +51,7 @@ class BenchmarkGates:
     max_kinematic_acceleration_p95_px_s2: float = 250_000.0
     max_kinematic_lateral_acceleration_p95_px_s2: float = 250_000.0
     max_kinematic_jerk_p95_px_s3: float = 100_000_000.0
+    max_raw_velocity_jump_px_s: float = 8_000.0
     approach_min_samples: int = 64
     min_approach_undershoot_share: float = 0.42
     max_approach_undershoot_share: float = 0.78
@@ -73,6 +74,10 @@ class BenchmarkGates:
     approach_press_min_success_rate: float = 0.85
     approach_press_max_timing_p95_ms: float = 60.0
     max_trace_flick_share: float = 0.20
+    max_trace_yank_share: float = 0.05
+    max_transition_path_ratio_p95: float = 2.50
+    max_transition_corridor_ratio_p95: float = 0.90
+    min_slider_handoff_coverage: float = 0.80
 
 
 def _repository_root() -> Path:
@@ -112,13 +117,14 @@ def _summary(values: Sequence[float] | np.ndarray) -> dict[str, float | int]:
     array = np.asarray(values, dtype=float)
     array = array[np.isfinite(array)]
     if not len(array):
-        return {"n": 0, "min": 0.0, "mean": 0.0, "p50": 0.0, "p95": 0.0, "max": 0.0}
+        return {"n": 0, "min": 0.0, "mean": 0.0, "p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0}
     return {
         "n": int(len(array)),
         "min": round(float(np.min(array)), 6),
         "mean": round(float(np.mean(array)), 6),
         "p50": round(float(np.percentile(array, 50)), 6),
         "p95": round(float(np.percentile(array, 95)), 6),
+        "p99": round(float(np.percentile(array, 99)), 6),
         "max": round(float(np.max(array)), 6),
     }
 
@@ -138,6 +144,10 @@ def _kinematic_summary(frames: Sequence[TraceFrame], sample_rate_hz: int = 500) 
             "sampling_rate_hz": sample_rate_hz,
             "source_frames": len(frames),
             "resampled_frames": 0,
+            "raw_velocity_px_s": empty,
+            "raw_velocity_jump_px_s": empty,
+            "raw_acceleration_px_s2": empty,
+            "raw_jerk_px_s3": empty,
             "velocity_px_s": empty,
             "acceleration_px_s2": empty,
             "lateral_acceleration_px_s2": empty,
@@ -155,6 +165,10 @@ def _kinematic_summary(frames: Sequence[TraceFrame], sample_rate_hz: int = 500) 
             "sampling_rate_hz": sample_rate_hz,
             "source_frames": len(frames),
             "resampled_frames": 0,
+            "raw_velocity_px_s": empty,
+            "raw_velocity_jump_px_s": empty,
+            "raw_acceleration_px_s2": empty,
+            "raw_jerk_px_s3": empty,
             "velocity_px_s": empty,
             "acceleration_px_s2": empty,
             "lateral_acceleration_px_s2": empty,
@@ -165,6 +179,10 @@ def _kinematic_summary(frames: Sequence[TraceFrame], sample_rate_hz: int = 500) 
     uniform_positions = np.column_stack(
         [np.interp(uniform_times, times, positions[:, axis]) for axis in range(positions.shape[1])]
     )
+    raw_velocity = np.diff(uniform_positions, axis=0) / step_s
+    raw_acceleration = np.diff(raw_velocity, axis=0) / step_s if len(raw_velocity) >= 2 else np.empty((0, 2))
+    raw_jerk = np.diff(raw_acceleration, axis=0) / step_s if len(raw_acceleration) >= 2 else np.empty((0, 2))
+    raw_velocity_jump = np.diff(raw_velocity, axis=0) if len(raw_velocity) >= 2 else np.empty((0, 2))
     # Event frames are retained in the trace for exact key/cursor dispatch,
     # but a single off-grid event must not become a multi-million px/s²
     # derivative.  A short triangular physical resampling kernel represents
@@ -192,6 +210,10 @@ def _kinematic_summary(frames: Sequence[TraceFrame], sample_rate_hz: int = 500) 
         "source_frames": len(frames),
         "resampled_frames": len(uniform_times),
         "resampling_filter": "triangular-5-sample" if filter_width > 1 else "none",
+        "raw_velocity_px_s": _summary(np.linalg.norm(raw_velocity, axis=1)),
+        "raw_velocity_jump_px_s": _summary(np.linalg.norm(raw_velocity_jump, axis=1)),
+        "raw_acceleration_px_s2": _summary(np.linalg.norm(raw_acceleration, axis=1)),
+        "raw_jerk_px_s3": _summary(np.linalg.norm(raw_jerk, axis=1)),
         "velocity_px_s": _summary(np.linalg.norm(velocity, axis=1)),
         "acceleration_px_s2": _summary(np.linalg.norm(acceleration, axis=1)),
         "lateral_acceleration_px_s2": _summary(lateral_acceleration),
@@ -424,7 +446,7 @@ def _trace_motion_summary(
     planner: HumanTracePlanner,
     timeline_start_ms: float,
 ) -> dict[str, Any]:
-    """Measure sampled motion allocation and unnecessary compressed moves.
+    """Measure compressed moves and transition-level path excursions.
 
     Motion is measured on a uniform cursor cadence.  The trace may contain
     exact event frames for atomic key/cursor dispatch, but those off-grid
@@ -432,6 +454,8 @@ def _trace_motion_summary(
     transition is a flick candidate only when its map gap has ample time at
     the profile speed ceiling and the observed 10%-to-90% travel is both
     unusually compressed and unusually fast relative to that available gap.
+    Every non-spinner object pair is also checked for an overshoot-return path,
+    including slider-tail handoffs that the original circle-only metric missed.
     """
     empty = _summary([])
     if len(frames) < 3 or not plan.objects:
@@ -447,6 +471,17 @@ def _trace_motion_summary(
             "speed_over_ceiling": empty,
             "flick_count": 0,
             "flick_share": 0.0,
+            "all_transitions": 0,
+            "slider_handoffs_expected": 0,
+            "slider_handoffs_evaluated": 0,
+            "slider_handoff_coverage": 1.0,
+            "path_length_ratio": empty,
+            "corridor_deviation_ratio": empty,
+            "projection_excursion_ratio": empty,
+            "maximum_reversal_deg": empty,
+            "yank_count": 0,
+            "yank_share": 0.0,
+            "yank_events": [],
         }
     frame_times = np.asarray(
         [timeline_start_ms + frame.time_us / 1000.0 for frame in frames],
@@ -470,6 +505,17 @@ def _trace_motion_summary(
             "speed_over_ceiling": empty,
             "flick_count": 0,
             "flick_share": 0.0,
+            "all_transitions": 0,
+            "slider_handoffs_expected": 0,
+            "slider_handoffs_evaluated": 0,
+            "slider_handoff_coverage": 1.0,
+            "path_length_ratio": empty,
+            "corridor_deviation_ratio": empty,
+            "projection_excursion_ratio": empty,
+            "maximum_reversal_deg": empty,
+            "yank_count": 0,
+            "yank_share": 0.0,
+            "yank_events": [],
         }
     uniform_times = np.arange(frame_times[0], frame_times[-1] + step_ms * 0.5, step_ms)
     uniform_positions = np.column_stack(
@@ -486,9 +532,92 @@ def _trace_motion_summary(
     ceiling_ratios: list[float] = []
     flick_count = 0
     candidate_count = 0
+    transition_count = 0
+    slider_handoffs_expected = 0
+    slider_handoffs_evaluated = 0
+    path_length_ratios: list[float] = []
+    corridor_ratios: list[float] = []
+    projection_excursion_ratios: list[float] = []
+    maximum_reversals: list[float] = []
+    yank_events: list[dict[str, Any]] = []
+    yank_count = 0
     for object_index in range(1, len(plan.objects)):
         previous = plan.objects[object_index - 1]
         current = plan.objects[object_index]
+        if previous.kind != "spinner" and current.kind != "spinner":
+            path_start_time = float(previous.end_time_ms)
+            path_end_time = float(current.start_time_ms)
+            path_gap_ms = path_end_time - path_start_time
+            ordinary_transition = 2.0 * step_ms <= path_gap_ms <= 600.0
+            if previous.kind == "slider" and ordinary_transition:
+                slider_handoffs_expected += 1
+            if ordinary_transition:
+                interior = uniform_times[(uniform_times > path_start_time) & (uniform_times < path_end_time)]
+                local_times = np.concatenate(([path_start_time], interior, [path_end_time]))
+                local_positions = np.column_stack(
+                    [np.interp(local_times, uniform_times, uniform_positions[:, axis]) for axis in range(2)]
+                )
+                deltas = np.diff(local_positions, axis=0)
+                lengths = np.linalg.norm(deltas, axis=1)
+                direct_vector = local_positions[-1] - local_positions[0]
+                direct_distance = float(np.linalg.norm(direct_vector))
+                scale = max(direct_distance, 0.5 * max(previous.radius, current.radius), 12.0)
+                path_ratio = float(np.sum(lengths) / scale)
+                if direct_distance > 1e-6:
+                    projection = (local_positions - local_positions[0]) @ direct_vector / (direct_distance**2)
+                    closest = local_positions[0] + np.clip(projection, 0.0, 1.0)[:, None] * direct_vector
+                    corridor_ratio = float(np.max(np.linalg.norm(local_positions - closest, axis=1)) / scale)
+                    projection_excursion = float(
+                        max(0.0, -float(np.min(projection)), float(np.max(projection)) - 1.0)
+                        * direct_distance
+                        / scale
+                    )
+                else:
+                    corridor_ratio = float(np.max(np.linalg.norm(local_positions - local_positions[0], axis=1)) / scale)
+                    projection_excursion = 0.0
+                local_dt = np.diff(local_times) / 1000.0
+                local_velocity = deltas / np.maximum(local_dt[:, None], 1e-6)
+                local_speed = np.linalg.norm(local_velocity, axis=1)
+                reversal = 0.0
+                for left_index in range(len(local_velocity) - 1):
+                    if min(local_speed[left_index], local_speed[left_index + 1]) < 150.0:
+                        continue
+                    cosine = float(
+                        np.clip(
+                            np.dot(local_velocity[left_index], local_velocity[left_index + 1])
+                            / max(local_speed[left_index] * local_speed[left_index + 1], 1e-9),
+                            -1.0,
+                            1.0,
+                        )
+                    )
+                    reversal = max(reversal, math.degrees(math.acos(cosine)))
+                yank = (
+                    (corridor_ratio > 1.25 and path_ratio > 2.0)
+                    or projection_excursion > 0.75
+                    or (reversal > 165.0 and path_ratio > 2.5)
+                )
+                transition_count += 1
+                if previous.kind == "slider":
+                    slider_handoffs_evaluated += 1
+                path_length_ratios.append(path_ratio)
+                corridor_ratios.append(corridor_ratio)
+                projection_excursion_ratios.append(projection_excursion)
+                maximum_reversals.append(reversal)
+                yank_count += int(yank)
+                if yank:
+                    yank_events.append(
+                        {
+                            "object_index": object_index,
+                            "previous_kind": previous.kind,
+                            "current_kind": current.kind,
+                            "start_time_ms": round(path_start_time, 3),
+                            "end_time_ms": round(path_end_time, 3),
+                            "path_length_ratio": round(path_ratio, 6),
+                            "corridor_deviation_ratio": round(corridor_ratio, 6),
+                            "projection_excursion_ratio": round(projection_excursion, 6),
+                            "maximum_reversal_deg": round(reversal, 6),
+                        }
+                    )
         if previous.kind != "circle" or current.kind != "circle":
             continue
         start_time = float(previous.start_time_ms)
@@ -553,6 +682,27 @@ def _trace_motion_summary(
         "speed_over_ceiling": _summary(ceiling_ratios),
         "flick_count": int(flick_count),
         "flick_share": round(flick_count / max(1, candidate_count), 6),
+        "all_transitions": int(transition_count),
+        "slider_handoffs_expected": int(slider_handoffs_expected),
+        "slider_handoffs_evaluated": int(slider_handoffs_evaluated),
+        "slider_handoff_coverage": round(
+            slider_handoffs_evaluated / max(1, slider_handoffs_expected),
+            6,
+        ),
+        "path_length_ratio": _summary(path_length_ratios),
+        "corridor_deviation_ratio": _summary(corridor_ratios),
+        "projection_excursion_ratio": _summary(projection_excursion_ratios),
+        "maximum_reversal_deg": _summary(maximum_reversals),
+        "yank_count": int(yank_count),
+        "yank_share": round(yank_count / max(1, transition_count), 6),
+        "yank_events": sorted(
+            yank_events,
+            key=lambda value: max(
+                float(value["corridor_deviation_ratio"]),
+                float(value["projection_excursion_ratio"]),
+            ),
+            reverse=True,
+        )[:20],
     }
 
 
@@ -834,6 +984,9 @@ def _aggregate_run_metrics(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
             "max_acceleration_p95_px_s2": max((float(value["acceleration_px_s2"]["p95"]) for value in kinematic_values), default=0.0),
             "max_lateral_acceleration_p95_px_s2": max((float(value["lateral_acceleration_px_s2"]["p95"]) for value in kinematic_values), default=0.0),
             "max_jerk_p95_px_s3": max((float(value["jerk_px_s3"]["p95"]) for value in kinematic_values), default=0.0),
+            "max_raw_acceleration_px_s2": max((float(value["raw_acceleration_px_s2"]["max"]) for value in kinematic_values), default=0.0),
+            "max_raw_jerk_px_s3": max((float(value["raw_jerk_px_s3"]["max"]) for value in kinematic_values), default=0.0),
+            "max_raw_velocity_jump_px_s": max((float(value["raw_velocity_jump_px_s"]["max"]) for value in kinematic_values), default=0.0),
         },
         "motion": {
             "runs": len(motion_values),
@@ -858,6 +1011,31 @@ def _aggregate_run_metrics(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
             ),
             "flick_count": int(sum(int(value.get("flick_count", 0)) for value in motion_values)),
             "flick_share": _summary([float(value.get("flick_share", 0.0)) for value in motion_values]),
+            "all_transitions": int(sum(int(value.get("all_transitions", 0)) for value in motion_values)),
+            "slider_handoffs_expected": int(sum(int(value.get("slider_handoffs_expected", 0)) for value in motion_values)),
+            "slider_handoffs_evaluated": int(sum(int(value.get("slider_handoffs_evaluated", 0)) for value in motion_values)),
+            "slider_handoff_coverage": _summary(
+                [float(value.get("slider_handoff_coverage", 1.0)) for value in motion_values if int(value.get("slider_handoffs_expected", 0)) > 0]
+            ),
+            "path_length_ratio_p95": _summary(
+                [float(value["path_length_ratio"]["p95"]) for value in motion_values if int(value.get("all_transitions", 0)) > 0]
+            ),
+            "corridor_deviation_ratio_p95": _summary(
+                [float(value["corridor_deviation_ratio"]["p95"]) for value in motion_values if int(value.get("all_transitions", 0)) > 0]
+            ),
+            "projection_excursion_ratio_max": _summary(
+                [float(value["projection_excursion_ratio"]["max"]) for value in motion_values if int(value.get("all_transitions", 0)) > 0]
+            ),
+            "maximum_reversal_deg": _summary(
+                [float(value["maximum_reversal_deg"]["max"]) for value in motion_values if int(value.get("all_transitions", 0)) > 0]
+            ),
+            "yank_count": int(sum(int(value.get("yank_count", 0)) for value in motion_values)),
+            "yank_share": _summary([float(value.get("yank_share", 0.0)) for value in motion_values]),
+            "yank_events": [
+                event
+                for value in motion_values
+                for event in value.get("yank_events", [])
+            ][:50],
         },
         "continuity": {
             "runs": len(continuity_values),
@@ -1170,10 +1348,15 @@ def _gate_report(
         default=0.0,
     )
     max_jerk_p95 = max((float(value.get("max_jerk_p95_px_s3", 0.0)) for value in kinematic_aggregates), default=0.0)
+    max_raw_velocity_jump = max(
+        (float(value.get("max_raw_velocity_jump_px_s", 0.0)) for value in kinematic_aggregates),
+        default=0.0,
+    )
     add("kinematic_speed_bound", max_speed <= gates.max_kinematic_speed_px_s, round(max_speed, 6), gates.max_kinematic_speed_px_s, "uniform-cadence trace speed bound")
     add("kinematic_acceleration_bound", max_acceleration_p95 <= gates.max_kinematic_acceleration_p95_px_s2, round(max_acceleration_p95, 6), gates.max_kinematic_acceleration_p95_px_s2, "uniform-cadence acceleration p95 bound")
     add("kinematic_lateral_acceleration_bound", max_lateral_acceleration_p95 <= gates.max_kinematic_lateral_acceleration_p95_px_s2, round(max_lateral_acceleration_p95, 6), gates.max_kinematic_lateral_acceleration_p95_px_s2, "uniform-cadence lateral acceleration p95 bound")
     add("kinematic_jerk_bound", max_jerk_p95 <= gates.max_kinematic_jerk_p95_px_s3, round(max_jerk_p95, 6), gates.max_kinematic_jerk_p95_px_s3, "uniform-cadence jerk p95 bound")
+    add("raw_velocity_jump_bound", max_raw_velocity_jump <= gates.max_raw_velocity_jump_px_s, round(max_raw_velocity_jump, 6), gates.max_raw_velocity_jump_px_s, "maximum unfiltered velocity-vector change; unlike acceleration maxima this is not inflated solely by sub-millisecond event spacing")
     motion_aggregates = [report["aggregate"].get("motion", {}) for report in map_reports]
     motion_flick_values = [
         float(value.get("flick_share", {}).get("max", 0.0))
@@ -1187,6 +1370,54 @@ def _gate_report(
         round(max_flick_share, 6),
         gates.max_trace_flick_share,
         "ordinary transitions with spare time must not be compressed into unnecessary flicks",
+    )
+    motion_yank_values = [
+        float(value.get("yank_share", {}).get("max", 0.0))
+        for value in motion_aggregates
+        if int(value.get("all_transitions", 0)) >= gates.continuity_min_samples
+    ]
+    path_ratio_values = [
+        float(value.get("path_length_ratio_p95", {}).get("max", 0.0))
+        for value in motion_aggregates
+        if int(value.get("all_transitions", 0)) >= gates.continuity_min_samples
+    ]
+    corridor_ratio_values = [
+        float(value.get("corridor_deviation_ratio_p95", {}).get("max", 0.0))
+        for value in motion_aggregates
+        if int(value.get("all_transitions", 0)) >= gates.continuity_min_samples
+    ]
+    slider_coverage_values = [
+        float(value.get("slider_handoff_coverage", {}).get("min", 0.0))
+        for value in motion_aggregates
+        if int(value.get("slider_handoffs_expected", 0)) > 0
+    ]
+    add(
+        "trace_yank_share",
+        not motion_yank_values or max(motion_yank_values) <= gates.max_trace_yank_share,
+        None if not motion_yank_values else round(max(motion_yank_values), 6),
+        gates.max_trace_yank_share,
+        "all object-type transitions are checked for overshoot-return excursions and near-180-degree snapbacks",
+    )
+    add(
+        "transition_path_ratio_p95",
+        not path_ratio_values or max(path_ratio_values) <= gates.max_transition_path_ratio_p95,
+        None if not path_ratio_values else round(max(path_ratio_values), 6),
+        gates.max_transition_path_ratio_p95,
+        "transition path length must remain proportionate to its endpoint displacement and object radius",
+    )
+    add(
+        "transition_corridor_ratio_p95",
+        not corridor_ratio_values or max(corridor_ratio_values) <= gates.max_transition_corridor_ratio_p95,
+        None if not corridor_ratio_values else round(max(corridor_ratio_values), 6),
+        gates.max_transition_corridor_ratio_p95,
+        "transition paths must not leave a broad endpoint-relative corridor",
+    )
+    add(
+        "slider_handoff_coverage",
+        not slider_coverage_values or min(slider_coverage_values) >= gates.min_slider_handoff_coverage,
+        None if not slider_coverage_values else round(min(slider_coverage_values), 6),
+        gates.min_slider_handoff_coverage,
+        "maps containing slider handoffs must actually evaluate those handoffs instead of silently passing empty evidence",
     )
     continuity_reports = [report["aggregate"].get("continuity", {}) for report in map_reports]
     flow_reports = [

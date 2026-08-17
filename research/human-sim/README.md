@@ -141,14 +141,25 @@ reversals may approach zero without a
 velocity (1e-5 px/s), and shared acceleration (1e-3 px/s²) tolerances. Cursor
 kinematics are differentiated only after resampling to the configured cadence;
 the five-sample triangular resampling filter is recorded in JSON, and p95
-speed/acceleration/lateral-acceleration/jerk bounds are checked. The raw
-event-frame trace remains available for timing and dispatch analysis. The
+speed/acceleration/lateral-acceleration/jerk bounds are checked. Unfiltered
+uniform-cadence velocity, velocity-vector jump, acceleration, and jerk
+distributions are retained too. The maximum velocity-vector jump is gated;
+raw acceleration/jerk maxima remain diagnostic because a real boundary change
+divided by a sub-millisecond event interval can inflate the derivative without
+creating a visible displacement. The
 uniform-cadence motion report additionally records launch-delay share, transit
 share, active-motion share, p50/p95/max speed, speed normalized by available
 gap and speed ceiling, velocity carry, severe-stop share, and an unnecessary
 flick count/share. A flick is gated only when the map gap has spare time and
 the measured 10%-to-90% travel is both compressed and unusually fast; genuine
-dense late-arrival misses are not relabelled as flicks.
+dense late-arrival misses are not relabelled as flicks. Separately, every
+non-spinner transition of 2-600 ms is checked regardless of object kind. The
+report measures travelled/direct path ratio, endpoint-corridor deviation,
+projection outside the endpoint segment, and maximum velocity reversal. This
+catches slider-tail overshoot/return yanks that the older circle-only metric
+could not see. Slider-handoff coverage is gated, so eligible handoffs cannot
+pass on empty evidence. Longer gaps use the intentional idle-wander model and
+are excluded from the target-to-target excursion gate.
 
 Skill and effort monotonicity runs cover every selected map and the first three
 benchmark seeds by default. Paired profile changes are aggregated across seeds;
@@ -158,9 +169,10 @@ different seed subset.
 Trace headers and manifests carry `planner_version`, `git_commit`, and
 `build_identity`. The runner rejects missing or stale identity fields before
 using a cached trace. `research/run-dev-build.ps1` prints the checkout
-identity, supports an opt-in clean-checkout `-Update` (fetch plus
-`--ff-only` only), reinstalls the editable package, builds the client and
-runner, verifies Python/runner identity, and launches only after those checks.
+identity, supports an opt-in `-Update` (fetch plus `--ff-only` when clean;
+otherwise it safely skips updating and launches the local work), reinstalls
+the editable package, builds the client and runner, verifies Python/runner
+identity, and launches only after those checks.
 Use `-VerifyTrace <trace.gz>` when validating a specific existing trace; old
 v2.11/v2.12 artifacts are retained as raw evidence but are not accepted as
 current cache entries.
