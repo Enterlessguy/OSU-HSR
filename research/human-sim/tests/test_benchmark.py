@@ -9,6 +9,7 @@ from human_sim.benchmark import (
     _approach_aligned_summary,
     _kinematic_summary,
     _monotonicity,
+    _spinner_idle_summary,
     _trace_motion_summary,
     format_summary,
     run_benchmark,
@@ -75,6 +76,7 @@ def test_benchmark_reports_reproducibility_distributions_and_json(tmp_path):
     assert report["monotonicity"]["seeds"] == [42, 43, 44]
     assert "acceleration_px_s2" in metrics["kinematics"]
     assert "lateral_acceleration_px_s2" in metrics["kinematics"]
+    assert "spinner_idle_motion" in metrics
     assert metrics["kinematics"]["sampling_rate_hz"] == 500
     assert report["classification"] == "planner-only/not-runtime-validated"
     assert "gates=" in format_summary(report)
@@ -177,3 +179,37 @@ def test_approach_summary_detects_a_wedge_and_accepts_a_cloud():
     wedge = [[0.4, 0.04], [0.6, -0.05], [0.8, 0.03], [-0.5, 0.04], [-0.7, -0.06]]
     wedge_summary = _approach_aligned_summary(wedge)
     assert wedge_summary["wedge_share"] > 0.6
+
+
+def test_spinner_idle_summary_does_not_hide_wrong_direction_or_hovering():
+    plan = MapPlan.from_dict(
+        {
+            "schema_version": 1,
+            "beatmap_sha256": "e" * 64,
+            "beatmap_md5": "f" * 32,
+            "clock_rate": 1.0,
+            "mods": [],
+            "metadata": {"title": "mode-specific fixture"},
+            "objects": [
+                {"index": 0, "kind": "spinner", "effective_start_time_ms": 1000, "effective_end_time_ms": 2000, "position": {"x": 256, "y": 192}, "radius": 32},
+                {"index": 1, "kind": "circle", "effective_start_time_ms": 5000, "effective_end_time_ms": 5000, "position": {"x": 384, "y": 288}, "radius": 32},
+            ],
+        }
+    )
+    timeline_start = -500.0
+    frames = []
+    for time_ms in range(1000, 5001, 10):
+        if time_ms <= 2000:
+            angle = (time_ms - 1000) / 1000.0 * math.tau * 4.0
+            x = 256.0 + 80.0 * math.cos(angle)
+            y = 192.0 + 80.0 * math.sin(angle)
+        else:
+            x, y = 384.0, 288.0
+        frames.append(TraceFrame(int((time_ms - timeline_start) * 1000), x, y, False, False))
+
+    summary = _spinner_idle_summary(plan, frames, timeline_start, 100)
+
+    assert summary["spinner_windows"] == 1
+    assert summary["spinner_counter_clockwise_share"] < 0.05
+    assert summary["idle_windows"] == 1
+    assert summary["idle_target_hover_share_under_45_px"] > 0.95

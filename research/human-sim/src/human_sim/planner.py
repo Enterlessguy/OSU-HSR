@@ -11,7 +11,7 @@ from .schemas import HumanProfile, MapObject, MapPlan, TraceFrame
 
 # Bump when trace-generation behaviour changes so the runner's content-addressed
 # trace cache is invalidated (the configuration hash includes this string).
-PLANNER_VERSION = "timing-sync-v2.14"
+PLANNER_VERSION = "timing-sync-v2.15"
 
 
 @dataclass(frozen=True)
@@ -1217,13 +1217,10 @@ class HumanTracePlanner:
         if self.profile.perfect_baseline:
             return None, None
 
-        # The wander envelope (below) guarantees the cursor converges onto the
-        # target by the time the approach starts, so the reserve only needs to
-        # cover a short (~60 px) final approach plus settle and rearm slack.
-        # This is the mathematical fix for wander-induced late-arrival misses:
-        # the return distance at wander end is ~0, so the reserved approach
-        # time can never be insufficient.
-        approach_distance = 60.0
+        # End the doodle at a target-relative staging point. The ordinary
+        # transition owns the final approach, while the reserved distance
+        # guarantees that the return never needs a late flick.
+        approach_distance = 42.0
         fitts_ms = (
             (70.0 + 92.0 * math.log2(approach_distance / 64.0 + 1.0))
             * (1.08 - self.profile.percentile / 600.0)
@@ -1238,21 +1235,21 @@ class HumanTracePlanner:
         reserve = max(approach, min_duration) + 32.0 + self.step_ms * 4.0 + (120.0 if long_settle else 0.0)
         wander_start_time = max(available_from + self.step_ms, points[-1][0] + self.step_ms)
         budget_ms = hit_time - reserve - wander_start_time
-        if budget_ms < 350.0:
+        if budget_ms < 520.0:
             return None, None
 
-        # v2.7: the doodle roams a big neighbourhood around the next target
-        # (80-200 px away, playfield-safe) instead of hovering right next to
-        # it; the convergence envelope still brings it home in time.
-        center_distance = self.rng.uniform(80.0, 200.0)
-        center_angle = self.rng.uniform(0.0, math.tau)
-        center = np.array(
-            [
-                target[0] + center_distance * math.cos(center_angle),
-                target[1] + center_distance * math.sin(center_angle),
-            ]
-        )
-        center = np.clip(center, [70.0, 70.0], [442.0, 314.0])
+        # Select a playfield-safe roam centre well away from the next object.
+        # Trying several directions avoids edge clipping collapsing the centre
+        # back onto a target near a playfield boundary.
+        centre_candidates: list[np.ndarray] = []
+        for _ in range(8):
+            centre_distance = self.rng.uniform(115.0, 185.0)
+            centre_angle = self.rng.uniform(0.0, math.tau)
+            candidate = target + centre_distance * np.array(
+                [math.cos(centre_angle), math.sin(centre_angle)]
+            )
+            centre_candidates.append(np.clip(candidate, [70.0, 70.0], [442.0, 314.0]))
+        center = max(centre_candidates, key=lambda value: float(np.linalg.norm(value - target)))
 
         # Pattern parameters are drawn once per idle window so the shape stays
         # stable for its whole duration (a pattern that redraws itself every
@@ -1260,27 +1257,23 @@ class HumanTracePlanner:
         # v2.7: pattern pace scales with how much time is available - a long
         # idle window gets slow, grand figure-8s; a short one gets a tighter,
         # quicker doodle.
-        period_ms = self.rng.uniform(1400.0, 3200.0) * float(np.clip(budget_ms / 2500.0, 0.7, 1.6))
+        period_ms = self.rng.uniform(1700.0, 3300.0) * float(np.clip(budget_ms / 2500.0, 0.75, 1.5))
         phase = self.rng.uniform(0.0, math.tau)
         rotation = self.rng.uniform(0.0, math.tau)
-        axis_a = self.rng.uniform(60.0, 110.0)
-        axis_b = self.rng.uniform(45.0, 85.0)
-        speed_mult = self.rng.uniform(0.6, 1.4)
+        amplitude_scale = float(np.clip(budget_ms / 1800.0, 0.55, 1.0))
+        axis_a = self.rng.uniform(45.0, 82.0) * amplitude_scale
+        axis_b = self.rng.uniform(34.0, 65.0) * amplitude_scale
         cos_r, sin_r = math.cos(rotation), math.sin(rotation)
-        wobble_freq = self.rng.uniform(0.2, 0.6)
         wobble_phase = self.rng.uniform(0.0, math.tau)
-        wobble_amp = self.rng.uniform(2.0, 6.0)
-        drift_amp = self.rng.uniform(20.0, 45.0)
-        drift_freq = self.rng.uniform(0.03, 0.10)
+        wobble_amp = self.rng.uniform(1.5, 4.0)
+        drift_amp = self.rng.uniform(8.0, 22.0)
         drift_phase = self.rng.uniform(0.0, math.tau)
-        shrink_power = self.rng.uniform(1.0, 1.8)
+        speed_phase = self.rng.uniform(0.0, math.tau)
+        speed_phase_2 = self.rng.uniform(0.0, math.tau)
         kind_roll = self.rng.random()
-        # v2.7: smooth figure-8s dominate (~65%), circles are a smaller
-        # minority (~20%), loose random paths are now rare (~15%) so the idle
-        # motion reads as a confident doodle, not noise.
-        kind = "figure8" if kind_roll < 0.65 else "circle" if kind_roll < 0.85 else "random"
-        rand_freqs = [self.rng.uniform(0.15, 1.0) for _ in range(3)]
-        rand_amps = [self.rng.uniform(25.0, 55.0) for _ in range(3)]
+        kind = "figure8" if kind_roll < 0.55 else "circle" if kind_roll < 0.82 else "random"
+        rand_freqs = [self.rng.uniform(0.18, 0.62) for _ in range(3)]
+        rand_amps = [self.rng.uniform(14.0, 32.0) * amplitude_scale for _ in range(3)]
         rand_phases = [self.rng.uniform(0.0, math.tau) for _ in range(3)]
 
         def pattern(clock_ms: float) -> np.ndarray:
@@ -1301,52 +1294,49 @@ class HumanTracePlanner:
                     amp * math.sin(math.tau * freq * clock_ms / 1000.0 + p + (index + 1) * 1.9)
                     for index, (amp, freq, p) in enumerate(zip(rand_amps, rand_freqs, rand_phases))
                 )
-            # A slow wobble keeps the pattern from looking mathematically
-            # perfect, and a very slow centre drift makes the doodle roam
-            # instead of orbiting one fixed spot.
-            wobble = wobble_amp * math.sin(math.tau * wobble_freq * clock_ms / 1000.0 + wobble_phase)
-            local = np.array([(px + wobble) * speed_mult, py * speed_mult])
+            # Fixed low-frequency harmonics make each doodle imperfect without
+            # injecting sample-to-sample tremor.
+            wobble = wobble_amp * math.sin(0.63 * u + wobble_phase)
+            local = np.array([px + wobble, py + 0.65 * wobble_amp * math.sin(0.41 * u + wobble_phase)])
             drift = np.array(
                 [
-                    drift_amp * math.sin(math.tau * drift_freq * clock_ms / 1000.0 + drift_phase),
-                    drift_amp * math.cos(math.tau * drift_freq * clock_ms / 1000.0 + drift_phase + 1.3),
+                    drift_amp * math.sin(math.tau * clock_ms / 8200.0 + drift_phase),
+                    drift_amp * math.cos(math.tau * clock_ms / 9700.0 + drift_phase + 1.3),
                 ]
             )
             return center + drift + np.array(
                 [local[0] * cos_r - local[1] * sin_r, local[0] * sin_r + local[1] * cos_r]
             )
 
-        entry_ms = min(300.0, budget_ms * 0.35)
-        # v2.7: larger doodles need a bit more headroom; still well inside the
-        # human envelope.
+        entry_ms = min(320.0, budget_ms * 0.28)
+        exit_ms = min(480.0, max(260.0, budget_ms * 0.24))
         max_step = 1600.0 * self.step_ms / 1000.0
         wander_end_time = hit_time - reserve
-        duration_ms = max(1.0, wander_end_time - wander_start_time)
-        noise_state = np.zeros(2)
-        # Time-varying speed: a smooth OU multiplier on the pattern clock, so
-        # the doodle accelerates and slows organically instead of one robotic
-        # orbital speed.
-        speed_env = 1.0
-        speed_rho = math.exp(-self.step_ms / 420.0)
-        speed_innovation = 0.22 * math.sqrt(max(1e-9, 1.0 - speed_rho * speed_rho))
+        exit_start_time = wander_end_time - exit_ms
+        staging_direction = _normalised(center - target)
+        if float(np.linalg.norm(staging_direction)) < 1e-6:
+            staging_direction = np.array([1.0, 0.0])
+        staging = np.clip(target + staging_direction * approach_distance, [8.0, 8.0], [504.0, 376.0])
         pattern_clock = 0.0
         previous_position = start
         emitted = 0
         t = wander_start_time
         while t <= wander_end_time - self.step_ms * 0.5:
-            progress = min(1.0, (t - wander_start_time) / duration_ms)
-            # Envelope: the doodle is anchored to the target and shrinks onto
-            # it as the wander ends, so the return distance is always feasible.
-            shrink = (1.0 - progress) ** shrink_power
             entry_fraction = min(1.0, (t - wander_start_time) / entry_ms)
-            ease = _minimum_jerk(np.array([entry_fraction]))[0]
-            # Small, slow jitter: ~0.18 px per 2 ms step (~90 px/s), so the
-            # doodle has natural hand-tremor texture without squiggling.
-            noise_state = 0.96 * noise_state + self.rng.normal(0.0, 0.18, 2)
-            speed_env = float(np.clip(speed_rho * speed_env + self.rng.normal(0.0, speed_innovation), 0.45, 1.4))
-            pattern_clock += self.step_ms * speed_env
-            blended = start + (pattern(pattern_clock) - start) * ease
-            position = target + (blended - target) * shrink + noise_state * shrink
+            entry_ease = _minimum_jerk(np.array([entry_fraction]))[0]
+            speed_modulation = (
+                1.0
+                + 0.13 * math.sin(math.tau * pattern_clock / 3900.0 + speed_phase)
+                + 0.06 * math.sin(math.tau * pattern_clock / 6100.0 + speed_phase_2)
+            )
+            pattern_clock += self.step_ms * speed_modulation
+            roaming = start + (pattern(pattern_clock) - start) * entry_ease
+            if t >= exit_start_time:
+                exit_fraction = min(1.0, (t - exit_start_time) / max(self.step_ms, exit_ms))
+                exit_ease = _minimum_jerk(np.array([exit_fraction]))[0]
+                position = roaming * (1.0 - exit_ease) + staging * exit_ease
+            else:
+                position = roaming
             position = np.clip(position, [8.0, 8.0], [504.0, 376.0])
             delta = position - previous_position
             delta_length = float(np.linalg.norm(delta))
@@ -1944,7 +1934,7 @@ class HumanTracePlanner:
             centre = np.array([256.0, 192.0])
             radius_x = radius_y = 90.0
             rpm = 480.0
-            direction = 1.0
+            direction = -1.0
             phase = 0.0
         else:
             centre = np.array([256.0, 192.0]) + self.rng.normal(0.0, self.params.aim_sigma * 0.7, 2)
@@ -1953,7 +1943,9 @@ class HumanTracePlanner:
             anchors = SPINNER_RPM_ANCHORS
             base_rpm = float(np.interp(self.skill * 100.0, [a[0] for a in anchors], [a[1] for a in anchors]))
             rpm = base_rpm * self.rng.uniform(0.88, 1.10)
-            direction = -1.0 if self.rng.random() < 0.5 else 1.0
+            # Screen Y increases downwards, so decreasing mathematical angle
+            # is visually counter-clockwise in osu!'s playfield.
+            direction = -1.0
             phase = self.rng.uniform(0.0, math.tau)
         entry = centre + np.array([radius_x * math.cos(phase), radius_y * math.sin(phase)])
         self._append_transition(
@@ -1968,10 +1960,38 @@ class HumanTracePlanner:
             continuous=False,
         )
         times = np.linspace(hit_time, hit_time + duration, count)
-        angles = phase + direction * ((times - times[0]) / 1000.0) * rpm / 60.0 * math.tau
-        radial_noise = self._persistent_noise_series(count, self.params.aim_sigma, 80.0)
-        for time_ms, angle, noise in zip(times, angles, radial_noise):
-            position = centre + np.array([(radius_x + noise) * math.cos(angle), (radius_y + noise) * math.sin(angle)])
+        elapsed_s = (times - times[0]) / 1000.0
+        base_rotation = elapsed_s * rpm / 60.0 * math.tau
+        if self.profile.perfect_baseline:
+            phase_modulation = np.zeros(count)
+            radial_scale = np.ones(count)
+            centre_drift = np.zeros((count, 2))
+        else:
+            speed_phase = self.rng.uniform(0.0, math.tau)
+            shape_phase_1 = self.rng.uniform(0.0, math.tau)
+            shape_phase_2 = self.rng.uniform(0.0, math.tau)
+            drift_phase = self.rng.uniform(0.0, math.tau)
+            phase_modulation = 0.055 * (
+                np.sin(math.tau * elapsed_s / 1.7 + speed_phase) - math.sin(speed_phase)
+            )
+            radial_scale = (
+                1.0
+                + self.rng.uniform(0.012, 0.028) * np.sin(2.0 * base_rotation + shape_phase_1)
+                + self.rng.uniform(0.006, 0.016) * np.sin(3.0 * base_rotation + shape_phase_2)
+            )
+            drift_amount = self.rng.uniform(0.8, 2.4)
+            centre_drift = np.column_stack(
+                (
+                    drift_amount * np.sin(math.tau * elapsed_s / 3.8 + drift_phase),
+                    0.7 * drift_amount * np.cos(math.tau * elapsed_s / 4.6 + drift_phase + 0.8),
+                )
+            )
+            centre_drift -= centre_drift[0]
+        angles = phase + direction * (base_rotation + phase_modulation)
+        for index, (time_ms, angle, scale) in enumerate(zip(times, angles, radial_scale)):
+            position = centre + centre_drift[index] + np.array(
+                [radius_x * scale * math.cos(angle), radius_y * scale * math.sin(angle)]
+            )
             points.append((float(time_ms), position))
 
     def _resample(

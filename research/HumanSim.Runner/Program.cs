@@ -13,7 +13,7 @@ namespace HumanSim.Runner;
 internal static class Program
 {
     private const int protocolVersion = 1;
-    internal const string plannerVersion = "timing-sync-v2.14";
+    internal const string plannerVersion = "timing-sync-v2.15";
 
     private static readonly object prePlanLock = new();
     private static readonly Dictionary<string, Task<Trace>> prePlanTasks = new(StringComparer.Ordinal);

@@ -199,3 +199,62 @@ unnecessary flicks and zero yanks, a maximum raw velocity-vector jump of
 6,092 px/s, and a filtered speed maximum of 5,421 px/s. This remains
 planner-only evidence; the old replay cannot be repaired and a new interactive
 replay is required to verify runtime dispatch and subjective cursor feel.
+
+## v2.15 spinner and free-roam postmortem (2026-08-17)
+
+The attached 21:52 Haiboku replay confirmed two mode-specific failures that
+whole-trace kinematic summaries did not isolate. All three spinners rotated
+clockwise, and their radius was driven by a full-amplitude Ornstein-Uhlenbeck
+sample with only an 80 ms correlation time. The long-gap idle path multiplied
+its entire doodle by `(1-progress)^p` around the next target, so most of every
+break collapsed into a small target-centred hover. Per-sample position and
+clock noise then made that hover visibly jitter.
+
+v2.15 fixes the spinner as a correlated imperfect ellipse. In screen
+coordinates, where positive Y points downward, its phase is
+`theta(t)=theta0-(omega*t+phi(t))`, making the visual rotation strictly
+counter-clockwise. Position is
+`p(t)=c+d(t)+(rx*s(t)*cos(theta), ry*s(t)*sin(theta))`, where `d(t)` is a slow
+1-2 px centre drift and `s(t)=1+a2*sin(2*omega*t+p2)+a3*sin(3*omega*t+p3)`.
+The amplitudes and phases are drawn once per spinner. There is no independent
+per-frame radial perturbation, so the trajectory remains imperfect without
+changing shape randomly from sample to sample.
+
+Free roam is now an explicit four-phase trajectory. A minimum-jerk blend
+`m(u)=10u^3-15u^4+6u^5` enters a figure-eight, ellipse, or low-frequency random
+Fourier path around a playfield-safe centre 115-185 px from the next target.
+The central dwell does not shrink toward the target. A second minimum-jerk
+blend exits to a staging point 42 px from the target, and the ordinary motion
+planner owns the final approach. The approach duration and speed-ceiling
+reserve are computed from that bounded staging distance, preventing both a
+late yank and an induced miss. Shape, drift, and phase-rate variation are
+low-frequency harmonics selected once per idle window; sample-level Gaussian
+jitter was removed.
+
+The benchmark now evaluates these modes independently. Spinner windows report
+visual direction share, reversal share, radius variation, and radial second
+difference. The central dwell of every eligible long gap reports target-hover
+share, target-distance distribution, and path second difference. This closes
+the earlier blind spot where ordinary transitions could dominate aggregate
+kinematics while spinner and break behavior remained defective.
+
+The attached replay and v2.15 seed 42 were resampled to the same 59 Hz replay
+cadence for a direct comparison:
+
+| Metric | attached v2.14 replay | v2.15 |
+| --- | ---: | ---: |
+| spinner visual counter-clockwise share | 0.000 | 1.000 |
+| spinner radial second-difference p95 | 11.720 px | 2.480 px |
+| spinner radius standard deviation, median | 8.655 px | 2.614 px |
+| long-gap target-hover share below 45 px | 58.113% | 0.000% |
+| long-gap target-distance median | 35.151 px | 171.718 px |
+| idle path second-difference p95 | 1.086 px | 0.188 px |
+
+The exact-map three-seed benchmark at skill 50, effort 90, and 1000 Hz passed
+same-seed reproducibility, success, landing-cloud, monotonicity, transition,
+spinner, and idle gates. Across the three seeds, success was 98.85-99.67%
+(2-7 misses among 610 judged objects), spinner radial roughness p95 remained
+well below the 0.35 px native-cadence gate, and all nine measured long-gap
+dwell windows had zero target-hover samples below 45 px. As before, these are
+planner-only results; a fresh interactive replay remains the final subjective
+and runtime validation.

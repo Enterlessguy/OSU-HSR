@@ -87,6 +87,33 @@ def test_trace_is_monotonic_and_releases_keys(tmp_path):
     assert len(result["git_commit"]) >= 7
 
 
+def test_spinner_is_smooth_imperfect_counter_clockwise_ellipse(tmp_path):
+    map_path = tmp_path / "spinner-map.ndjson.gz"
+    _write_map(map_path)
+    plan = load_map_plan(map_path)
+    frames = HumanTracePlanner(plan, HumanProfile(95.0, 1234, 500)).generate()
+    spinner = plan.objects[2]
+    timeline_start = plan.objects[0].start_time_ms - 1500.0
+    positions = np.asarray(
+        [
+            [frame.x, frame.y]
+            for frame in frames
+            if spinner.start_time_ms <= timeline_start + frame.time_us / 1000.0 <= spinner.end_time_ms
+        ],
+        dtype=float,
+    )
+    center = np.mean(positions, axis=0)
+    centered = positions - center
+    visual_angle = np.unwrap(np.arctan2(-centered[:, 1], centered[:, 0]))
+    angular_step = np.diff(visual_angle)
+    radius = np.linalg.norm(centered, axis=1)
+    radial_second_difference = np.abs(np.diff(radius, n=2))
+
+    assert np.mean(angular_step > 0.0) > 0.98
+    assert np.std(radius) > 1.0
+    assert np.percentile(radial_second_difference, 95) < 0.35
+
+
 def test_repeat_slider_samples_are_not_repeated_twice(tmp_path):
     map_path = tmp_path / "repeat-slider-map.ndjson.gz"
     samples = []
@@ -460,6 +487,12 @@ def test_idle_wander_fills_long_gap_smoothly(tmp_path):
                     max_speed = max(max_speed, distance / delta_seconds)
             previous = (t, frame.x, frame.y)
     assert max_speed < 2500.0
+
+    # Most of a long break is genuine free roam, not a shrinking hover around
+    # the next object. The final return remains covered by the assertion below.
+    roam_window = [frame for frame in frames if 3500.0 <= frame.time_us / 1000.0 <= 6500.0]
+    roam_distances = [math.hypot(frame.x - 384.0, frame.y - 288.0) for frame in roam_window]
+    assert np.median(roam_distances) > 75.0
 
     # The wander envelope must converge onto the next target before the
     # approach: just before the second press (trace-time ~8500, absolute

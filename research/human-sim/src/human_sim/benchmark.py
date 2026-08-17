@@ -78,6 +78,10 @@ class BenchmarkGates:
     max_transition_path_ratio_p95: float = 2.50
     max_transition_corridor_ratio_p95: float = 0.90
     min_slider_handoff_coverage: float = 0.80
+    min_spinner_counter_clockwise_share: float = 0.98
+    max_spinner_radial_second_difference_p95_px: float = 0.35
+    max_idle_target_hover_share: float = 0.30
+    min_idle_target_distance_median_px: float = 60.0
 
 
 def _repository_root() -> Path:
@@ -706,6 +710,99 @@ def _trace_motion_summary(
     }
 
 
+def _spinner_idle_summary(
+    plan: MapPlan,
+    frames: Sequence[TraceFrame],
+    timeline_start_ms: float,
+    sample_rate_hz: int,
+) -> dict[str, Any]:
+    """Measure spinner and free-roam behavior in their own time windows."""
+    empty = _summary([])
+    if len(frames) < 3 or not plan.objects:
+        return {
+            "spinner_windows": 0,
+            "spinner_angular_steps": 0,
+            "spinner_counter_clockwise_share": 0.0,
+            "spinner_direction_reversal_share": 0.0,
+            "spinner_radial_second_difference_px": empty,
+            "spinner_radius_std_px": empty,
+            "idle_windows": 0,
+            "idle_samples": 0,
+            "idle_target_hover_share_under_45_px": 0.0,
+            "idle_target_distance_px": empty,
+            "idle_second_difference_px": empty,
+        }
+
+    times = np.asarray([timeline_start_ms + frame.time_us / 1000.0 for frame in frames], dtype=float)
+    positions = np.asarray([[frame.x, frame.y] for frame in frames], dtype=float)
+    ordered = np.concatenate(([True], np.diff(times) > 0.0))
+    times = times[ordered]
+    positions = positions[ordered]
+    step_ms = 1000.0 / max(1, sample_rate_hz)
+    uniform_times = np.arange(times[0], times[-1] + step_ms * 0.5, step_ms)
+    uniform_positions = np.column_stack(
+        [np.interp(uniform_times, times, positions[:, axis]) for axis in range(2)]
+    )
+
+    spinner_steps: list[float] = []
+    spinner_radial_second: list[float] = []
+    spinner_radius_std: list[float] = []
+    spinner_windows = 0
+    for obj in plan.objects:
+        if obj.kind != "spinner":
+            continue
+        spinner_duration = max(0.0, float(obj.end_time_ms - obj.start_time_ms))
+        interior_margin = min(120.0, spinner_duration * 0.08)
+        mask = (
+            (uniform_times >= obj.start_time_ms + interior_margin)
+            & (uniform_times <= obj.end_time_ms - interior_margin)
+        )
+        local = uniform_positions[mask]
+        if len(local) < 8:
+            continue
+        spinner_windows += 1
+        centered = local - np.mean(local, axis=0)
+        visual_angle = np.unwrap(np.arctan2(-centered[:, 1], centered[:, 0]))
+        spinner_steps.extend(np.diff(visual_angle).tolist())
+        radius = np.linalg.norm(centered, axis=1)
+        spinner_radius_std.append(float(np.std(radius)))
+        spinner_radial_second.extend(np.abs(np.diff(radius, n=2)).tolist())
+
+    idle_distances: list[float] = []
+    idle_second: list[float] = []
+    idle_windows = 0
+    for previous, current in zip(plan.objects, plan.objects[1:]):
+        gap_ms = float(current.start_time_ms - previous.end_time_ms)
+        if gap_ms < 1600.0 or current.kind == "spinner":
+            continue
+        dwell_start = previous.end_time_ms + max(350.0, gap_ms * 0.12)
+        dwell_end = current.start_time_ms - max(750.0, gap_ms * 0.18)
+        mask = (uniform_times >= dwell_start) & (uniform_times <= dwell_end)
+        local = uniform_positions[mask]
+        if len(local) < 16:
+            continue
+        idle_windows += 1
+        target = np.array([current.position.x, current.position.y], dtype=float)
+        idle_distances.extend(np.linalg.norm(local - target, axis=1).tolist())
+        idle_second.extend(np.linalg.norm(np.diff(local, n=2, axis=0), axis=1).tolist())
+
+    spinner_steps_array = np.asarray(spinner_steps, dtype=float)
+    idle_distance_array = np.asarray(idle_distances, dtype=float)
+    return {
+        "spinner_windows": spinner_windows,
+        "spinner_angular_steps": int(len(spinner_steps_array)),
+        "spinner_counter_clockwise_share": round(float(np.mean(spinner_steps_array > 0.0)), 6) if len(spinner_steps_array) else 0.0,
+        "spinner_direction_reversal_share": round(float(np.mean(spinner_steps_array <= 0.0)), 6) if len(spinner_steps_array) else 0.0,
+        "spinner_radial_second_difference_px": _summary(spinner_radial_second),
+        "spinner_radius_std_px": _summary(spinner_radius_std),
+        "idle_windows": idle_windows,
+        "idle_samples": int(len(idle_distance_array)),
+        "idle_target_hover_share_under_45_px": round(float(np.mean(idle_distance_array < 45.0)), 6) if len(idle_distance_array) else 0.0,
+        "idle_target_distance_px": _summary(idle_distance_array),
+        "idle_second_difference_px": _summary(idle_second),
+    }
+
+
 def _correlation(left: Sequence[float], right: Sequence[float]) -> float | None:
     if len(left) < 3 or len(right) < 3:
         return None
@@ -883,6 +980,12 @@ def _run_metrics(
             frames,
             sample_rate_hz=planner.profile.sample_rate_hz if planner is not None else 500,
         ),
+        "spinner_idle_motion": _spinner_idle_summary(
+            plan,
+            frames,
+            timeline_start,
+            planner.profile.sample_rate_hz if planner is not None else 500,
+        ),
         "rows": rows,
     }
 
@@ -941,6 +1044,7 @@ def _aggregate_run_metrics(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
         for value in record["metrics"]["lag_abs_correlation"].values()
     ]
     kinematic_values = [record["metrics"]["kinematics"] for record in records]
+    spinner_idle_values = [record["metrics"]["spinner_idle_motion"] for record in records]
     continuity_values = [record["metrics"].get("continuity") for record in records]
     continuity_values = [value for value in continuity_values if value is not None]
     trace_values = [value.get("trace") for value in continuity_values if value.get("trace") is not None]
@@ -987,6 +1091,33 @@ def _aggregate_run_metrics(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
             "max_raw_acceleration_px_s2": max((float(value["raw_acceleration_px_s2"]["max"]) for value in kinematic_values), default=0.0),
             "max_raw_jerk_px_s3": max((float(value["raw_jerk_px_s3"]["max"]) for value in kinematic_values), default=0.0),
             "max_raw_velocity_jump_px_s": max((float(value["raw_velocity_jump_px_s"]["max"]) for value in kinematic_values), default=0.0),
+        },
+        "spinner_idle_motion": {
+            "spinner_windows": int(sum(int(value["spinner_windows"]) for value in spinner_idle_values)),
+            "spinner_angular_steps": int(sum(int(value["spinner_angular_steps"]) for value in spinner_idle_values)),
+            "spinner_counter_clockwise_share": _summary(
+                [float(value["spinner_counter_clockwise_share"]) for value in spinner_idle_values if int(value["spinner_angular_steps"]) > 0]
+            ),
+            "spinner_direction_reversal_share": _summary(
+                [float(value["spinner_direction_reversal_share"]) for value in spinner_idle_values if int(value["spinner_angular_steps"]) > 0]
+            ),
+            "spinner_radial_second_difference_p95_px": _summary(
+                [float(value["spinner_radial_second_difference_px"]["p95"]) for value in spinner_idle_values if int(value["spinner_windows"]) > 0]
+            ),
+            "spinner_radius_std_px": _summary(
+                [float(value["spinner_radius_std_px"]["p50"]) for value in spinner_idle_values if int(value["spinner_windows"]) > 0]
+            ),
+            "idle_windows": int(sum(int(value["idle_windows"]) for value in spinner_idle_values)),
+            "idle_samples": int(sum(int(value["idle_samples"]) for value in spinner_idle_values)),
+            "idle_target_hover_share_under_45_px": _summary(
+                [float(value["idle_target_hover_share_under_45_px"]) for value in spinner_idle_values if int(value["idle_windows"]) > 0]
+            ),
+            "idle_target_distance_median_px": _summary(
+                [float(value["idle_target_distance_px"]["p50"]) for value in spinner_idle_values if int(value["idle_windows"]) > 0]
+            ),
+            "idle_second_difference_p95_px": _summary(
+                [float(value["idle_second_difference_px"]["p95"]) for value in spinner_idle_values if int(value["idle_windows"]) > 0]
+            ),
         },
         "motion": {
             "runs": len(motion_values),
@@ -1357,6 +1488,57 @@ def _gate_report(
     add("kinematic_lateral_acceleration_bound", max_lateral_acceleration_p95 <= gates.max_kinematic_lateral_acceleration_p95_px_s2, round(max_lateral_acceleration_p95, 6), gates.max_kinematic_lateral_acceleration_p95_px_s2, "uniform-cadence lateral acceleration p95 bound")
     add("kinematic_jerk_bound", max_jerk_p95 <= gates.max_kinematic_jerk_p95_px_s3, round(max_jerk_p95, 6), gates.max_kinematic_jerk_p95_px_s3, "uniform-cadence jerk p95 bound")
     add("raw_velocity_jump_bound", max_raw_velocity_jump <= gates.max_raw_velocity_jump_px_s, round(max_raw_velocity_jump, 6), gates.max_raw_velocity_jump_px_s, "maximum unfiltered velocity-vector change; unlike acceleration maxima this is not inflated solely by sub-millisecond event spacing")
+    spinner_idle_aggregates = [report["aggregate"].get("spinner_idle_motion", {}) for report in map_reports]
+    spinner_evidence = sum(int(value.get("spinner_windows", 0)) for value in spinner_idle_aggregates)
+    idle_evidence = sum(int(value.get("idle_windows", 0)) for value in spinner_idle_aggregates)
+    spinner_ccw = [
+        float(value.get("spinner_counter_clockwise_share", {}).get("min", 0.0))
+        for value in spinner_idle_aggregates
+        if int(value.get("spinner_windows", 0)) > 0
+    ]
+    spinner_roughness = [
+        float(value.get("spinner_radial_second_difference_p95_px", {}).get("max", 0.0))
+        for value in spinner_idle_aggregates
+        if int(value.get("spinner_windows", 0)) > 0
+    ]
+    idle_hover = [
+        float(value.get("idle_target_hover_share_under_45_px", {}).get("max", 0.0))
+        for value in spinner_idle_aggregates
+        if int(value.get("idle_windows", 0)) > 0
+    ]
+    idle_distance = [
+        float(value.get("idle_target_distance_median_px", {}).get("min", 0.0))
+        for value in spinner_idle_aggregates
+        if int(value.get("idle_windows", 0)) > 0
+    ]
+    add(
+        "spinner_counter_clockwise",
+        not spinner_ccw or min(spinner_ccw) >= gates.min_spinner_counter_clockwise_share,
+        {"windows": spinner_evidence, "minimum_share": None if not spinner_ccw else round(min(spinner_ccw), 6)},
+        gates.min_spinner_counter_clockwise_share,
+        "evaluated only inside spinner windows; screen-space rotation must remain counter-clockwise",
+    )
+    add(
+        "spinner_radial_roughness",
+        not spinner_roughness or max(spinner_roughness) <= gates.max_spinner_radial_second_difference_p95_px,
+        {"windows": spinner_evidence, "maximum_p95_px": None if not spinner_roughness else round(max(spinner_roughness), 6)},
+        gates.max_spinner_radial_second_difference_p95_px,
+        "second radial difference at cursor cadence detects visible spinner jitter",
+    )
+    add(
+        "idle_target_hover_share",
+        not idle_hover or max(idle_hover) <= gates.max_idle_target_hover_share,
+        {"windows": idle_evidence, "maximum_share": None if not idle_hover else round(max(idle_hover), 6)},
+        gates.max_idle_target_hover_share,
+        "central long-gap dwell must not collapse into jitter around the next object",
+    )
+    add(
+        "idle_target_distance",
+        not idle_distance or min(idle_distance) >= gates.min_idle_target_distance_median_px,
+        {"windows": idle_evidence, "minimum_median_px": None if not idle_distance else round(min(idle_distance), 6)},
+        gates.min_idle_target_distance_median_px,
+        "central free-roam dwell must remain materially separated from the next object",
+    )
     motion_aggregates = [report["aggregate"].get("motion", {}) for report in map_reports]
     motion_flick_values = [
         float(value.get("flick_share", {}).get("max", 0.0))

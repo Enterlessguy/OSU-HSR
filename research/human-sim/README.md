@@ -98,7 +98,10 @@ include exact same-seed reproducibility, one-to-one object/press coverage,
 cross-seed landing delta/correlation, lag-2..8 periodicity, normalized landing
 radius (mean/p95/rim share), angular entropy, successful landings, timing
 distribution, cursor velocity/acceleration/jerk, structured context-label
-shares, and skill/effort monotonicity. Each matched landing also reports the
+shares, spinner-only rotation/radial roughness, long-gap idle hover/distance,
+and skill/effort monotonicity. Spinner and idle gates use mode-specific time
+windows, so ordinary circle samples cannot hide a defective spinner or
+free-roam path. Each matched landing also reports the
 approach-aligned longitudinal/lateral means and spreads, covariance
 anisotropy, undershoot share, skewness/kurtosis, sector entropy,
 `corr(|u|,|v|)`, tail/rim rates, and the explicit axis-wedge score. These
@@ -116,6 +119,12 @@ entropy >= 0.60 when at least 32 samples are available. The benchmark's primary
 offsets for correctly matched presses; `press_radial` is retained separately
 to expose cursor/timing contamination. Normal stochastic variation should not
 be handled by tightening these limits.
+
+Spinner gates require at least 98% visual counter-clockwise angular steps and
+radial second-difference p95 <= 0.35 px at the configured cursor cadence.
+Long-gap dwell windows require target-hover share below 45 px <= 0.30 and a
+median target distance >= 60 px. Reports include the evaluated window counts;
+zero evidence is visible rather than being mistaken for a measured pass.
 
 The approach-aligned artifact gates are intentionally broad: at least 64
 samples per map, undershoot share between 0.42 and 0.78, covariance
