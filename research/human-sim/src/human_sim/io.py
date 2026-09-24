@@ -7,7 +7,7 @@ import json
 import subprocess
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from .schemas import MapPlan, TraceFrame
 
@@ -68,6 +68,11 @@ def write_trace(
     planner_version: str | None = None,
     git_commit: str | None = None,
     build_identity: str | None = None,
+    motion_mode: str = "profile",
+    execution_mode: str = "math-only",
+    execution_blend: float = 0.0,
+    execution_adapter: str = "legacy",
+    execution_diagnostics: dict[str, Any] | None = None,
 ) -> str:
     if planner_version is None:
         from .planner import PLANNER_VERSION
@@ -75,6 +80,7 @@ def write_trace(
         planner_version = PLANNER_VERSION
     git_commit = git_commit or repository_git_commit()
     build_identity = build_identity or f"human-sim-python:{planner_version}:{git_commit}"
+    execution_diagnostics = execution_diagnostics or {}
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with _open_text(destination, "w") as stream:
@@ -94,7 +100,20 @@ def write_trace(
             "coordinate_space": "osu_playfield_512x384",
             "synthetic": True,
             "diagnostic_perfect": diagnostic_perfect,
+            "motion_mode": motion_mode,
+            "execution_mode": execution_mode,
+            "execution_blend": execution_blend,
+            "execution_adapter": execution_adapter,
             "model_sha256": model_sha256 or "built_in_baseline_v1",
+            "execution_diagnostics_version": 1,
+            "execution_model_sha256": str(execution_diagnostics.get("model_sha256") or model_sha256 or "none"),
+            "execution_effective_mode": str(execution_diagnostics.get("effective_mode") or execution_mode),
+            "execution_fallback": bool(execution_diagnostics.get("fallback", False)),
+            "execution_fallback_reason": execution_diagnostics.get("fallback_reason"),
+            "execution_segment_count": int(execution_diagnostics.get("segment_count", 0)),
+            "execution_learned_segment_count": int(execution_diagnostics.get("learned_segment_count", 0)),
+            "execution_changed_sample_count": int(execution_diagnostics.get("changed_sample_count", 0)),
+            "execution_fallback_segment_count": int(execution_diagnostics.get("fallback_segment_count", 0)),
             "planner_version": planner_version,
             "git_commit": git_commit,
             "build_identity": build_identity,

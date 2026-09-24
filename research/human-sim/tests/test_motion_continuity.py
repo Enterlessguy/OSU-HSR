@@ -183,6 +183,26 @@ def test_subsample_event_keeps_hermite_endpoint_exact_and_timestamps_increasing(
     assert all(left.time_us < right.time_us for left, right in zip(frames, frames[1:]))
 
 
+def test_impossible_short_reversal_keeps_momentum_instead_of_flicking(tmp_path):
+    map_path = tmp_path / "inertia.map.ndjson.gz"
+    _write_circle_flow_map(map_path)
+    planner = HumanTracePlanner(load_map_plan(map_path), HumanProfile(50, 42, 1000))
+    start = np.array([256.0, 192.0])
+    planner._reset_motion_state(0.0, start)
+    planner.motion_state.velocity = np.array([1000.0, 0.0])
+    points = [(0.0, start.copy())]
+    planner._append_continuous_transition(points, 0.0, 5.0, start, np.array([56.0, 192.0]), 0.0, 0, 32.0)
+    segment = planner.motion_segments[-1]
+    assert segment["dense_inertial"]
+    assert not segment["target_reached"]
+    # An unreachable target behind the cursor cannot reverse a moving hand
+    # within five milliseconds. The resulting miss is intentional.
+    assert segment["base_end"][0] > start[0]
+    assert segment["end_velocity"][0] > 900.0
+    assert segment["base_jerk_max_px_s3"] < 1_000_000
+    assert np.max(np.linalg.norm(np.diff([p for _, p in points], axis=0), axis=1)) < 2.0
+
+
 def test_slider_handoff_uses_tail_kinematics_without_derivative_explosion(tmp_path):
     map_path = tmp_path / "slider-handoff.map.ndjson.gz"
     _write_slider_handoff_map(map_path)

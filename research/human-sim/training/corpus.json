@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "description": "Human-only corpus. All existing local HSR runs are excluded. Populate only after provenance review.",
+  "replays": []
+}

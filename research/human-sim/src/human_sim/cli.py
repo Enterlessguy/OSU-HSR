@@ -4,13 +4,38 @@ import argparse
 from datetime import datetime
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
 
 from .benchmark import format_summary, run_benchmark, write_report
+from .boundary_aware_execution import boundary_aware_warp_math_trace
 from .collector import collect_replays
+from .coherent_execution import (
+    COHERENT_EXECUTION_VERSION,
+    apply_coherent_trajectory_model,
+    load_coherent_model,
+)
 from .dataset import extract_features
+from .execution import warp_math_trace
+from .execution_acquisition import (
+    audit_candidate_pilot,
+    audit_decoded_candidates,
+    summarize_index,
+    write_json,
+)
+from .execution_benchmark import run_paired_benchmark_for_map, write_paired_report
+from .execution_exploratory import build_admission_table, train_exploratory_candidate
+from .execution_training import (
+    audit_corpus,
+    evaluate_candidate,
+    inspect_candidate,
+    retrain_candidate,
+    train_candidate,
+    load_phase_model,
+    load_execution_corpus,
+)
 from .io import load_map_plan, repository_git_commit, write_trace
 from .library_audit import audit_library
 from .modeling import evaluate, fit_models
@@ -22,17 +47,142 @@ from .validation import validate_trace
 
 def _plan(args: argparse.Namespace) -> int:
     map_plan = load_map_plan(args.map_plan)
+    execution_blend = float(args.execution_blend)
+    if not math.isfinite(execution_blend) or not 0.0 <= execution_blend <= 1.0:
+        raise ValueError("execution blend must be between 0 and 1")
+    motion_mode = args.motion_mode or ("perfect" if args.perfect_baseline else "profile")
+    perfect_baseline = bool(args.perfect_baseline or motion_mode == "perfect")
     profile = HumanProfile(
         float(args.percentile),
         int(args.seed),
         int(args.sample_rate),
-        perfect_baseline=bool(args.perfect_baseline),
+        perfect_baseline=perfect_baseline,
         skill_level=float(args.skill if args.skill is not None else args.percentile),
         effort_level=float(args.effort),
     )
     planner = HumanTracePlanner(map_plan, profile, args.model_bundle)
     frames = planner.generate()
+    execution_result = None
+    execution_model = None
+    execution_model_load_error = None
+    requested_execution_mode = args.execution_mode or (
+        "hybrid" if args.execution_model or execution_blend > 0.0 else "math-only"
+    )
+    execution_adapter = str(getattr(args, "execution_adapter", "legacy"))
+    boundary_segments = _parse_segment_indices(getattr(args, "execution_boundary_segments", None))
+    if requested_execution_mode not in {"math-only", "hybrid", "coherent"}:
+        raise ValueError("execution mode must be math-only, hybrid, or coherent")
+    if requested_execution_mode == "math-only" and (args.execution_model or execution_blend > 0.0):
+        raise ValueError("math-only execution cannot receive an execution model or non-zero blend")
+    if requested_execution_mode == "coherent" and execution_blend <= 0.0:
+        raise ValueError("coherent execution requires a positive blend; use math-only for the control arm")
+    if requested_execution_mode == "math-only" and (execution_adapter != "legacy" or boundary_segments):
+        raise ValueError("math-only execution cannot select an execution adapter or boundary segments")
+    if execution_adapter == "boundary-aware-v2" and not boundary_segments:
+        raise ValueError("boundary-aware-v2 requires --execution-boundary-segments")
+    if execution_adapter != "boundary-aware-v2" and boundary_segments:
+        raise ValueError("--execution-boundary-segments requires --execution-adapter boundary-aware-v2")
+    if requested_execution_mode == "coherent":
+        if not args.execution_model:
+            raise ValueError("coherent execution requires --execution-model")
+        try:
+            coherent_model = load_coherent_model(args.execution_model)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError(f"coherent model rejected: {type(error).__name__}: {error}") from error
+        execution_model = coherent_model
+        frames, execution_result = apply_coherent_trajectory_model(
+            frames,
+            map_plan,
+            coherent_model,
+            blend=execution_blend,
+        )
+        execution_result["motion_mode"] = motion_mode
+        if execution_result.get("learned_segment_count", 0) <= 0 or execution_result.get("changed_sample_count", 0) <= 0:
+            raise ValueError("coherent model produced no delivered learned movement")
+    elif requested_execution_mode == "hybrid":
+        if args.execution_model:
+            try:
+                execution_model = load_phase_model(args.execution_model)
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                execution_model_load_error = f"model_rejected:{type(error).__name__}"
+        if execution_model is not None and execution_blend > 0.0:
+            timeline_start = map_plan.objects[0].start_time_ms - 1500.0
+            segment_boundaries = [obj.start_time_ms - timeline_start for obj in map_plan.objects]
+            segment_modes = ["break_free_roam"]
+            for left, right in zip(map_plan.objects, map_plan.objects[1:]):
+                if left.kind == "circle" and right.kind == "circle":
+                    segment_modes.append("circle")
+                elif left.kind == "slider" or right.kind == "slider":
+                    segment_modes.append("slider")
+                elif left.kind == "spinner" or right.kind == "spinner":
+                    segment_modes.append("spinner")
+                else:
+                    segment_modes.append("break_free_roam")
+            segment_modes.append("break_free_roam")
+            if execution_adapter == "boundary-aware-v2":
+                _, frames, execution_result = boundary_aware_warp_math_trace(
+                    frames,
+                    model=execution_model,
+                    blend=execution_blend,
+                    segment_boundaries_ms=segment_boundaries,
+                    segment_modes=segment_modes,
+                    selected_segment_indices=boundary_segments,
+                )
+                execution_result["blend"] = execution_blend
+                execution_result["segment_count"] = len(boundary_segments)
+            else:
+                frames, execution_trace = warp_math_trace(
+                    frames,
+                    model=execution_model,
+                    blend=execution_blend,
+                    sample_rate_hz=profile.sample_rate_hz,
+                    route_id=f"{map_plan.beatmap_sha256}:planner-trace",
+                    mode="mixed",
+                    segment_boundaries_ms=segment_boundaries,
+                    segment_modes=segment_modes,
+                    time_aware_phase=execution_adapter == "time-aware-v3",
+                )
+                execution_result = execution_trace.diagnostics.as_dict()
+                execution_result["route_sha256"] = execution_trace.route_sha256
+                execution_result["adapter"] = execution_adapter
+            execution_result["requested_mode"] = requested_execution_mode
+            execution_result["effective_mode"] = "hybrid" if execution_result.get("learned_segment_count") else "math-only"
+            execution_result["motion_mode"] = motion_mode
+            execution_result["segment_modes"] = segment_modes
+        else:
+            execution_result = {
+                "requested_mode": requested_execution_mode,
+                "effective_mode": "math-only",
+                "motion_mode": motion_mode,
+                "blend": execution_blend,
+                "model_sha256": getattr(execution_model, "model_sha256", None),
+                "fallback": True,
+                "fallback_reason": execution_model_load_error or "missing_model_or_zero_blend",
+                "segment_count": 0,
+                "learned_segment_count": 0,
+                "fallback_segment_count": 0,
+                "adapter": execution_adapter,
+            }
+        if execution_model_load_error:
+            execution_result["fallback"] = True
+            execution_result["fallback_reason"] = execution_model_load_error
+    else:
+        execution_result = {
+            "requested_mode": "math-only",
+            "effective_mode": "math-only",
+            "motion_mode": motion_mode,
+            "blend": 0.0,
+            "model_sha256": None,
+            "fallback": False,
+            "fallback_reason": None,
+            "segment_count": 0,
+            "learned_segment_count": 0,
+            "fallback_segment_count": 0,
+            "adapter": "legacy",
+        }
     model_hash = hashlib.sha256(Path(args.model_bundle).read_bytes()).hexdigest() if args.model_bundle else None
+    if execution_model is not None:
+        model_hash = getattr(execution_model, "model_sha256", None) or getattr(execution_model, "canonical_sha256", None)
     model_version = model_hash or ("built_in_perfect_baseline_v1" if profile.perfect_baseline else "built_in_baseline_v1")
     git_commit = repository_git_commit()
     build_identity = f"human-sim-python:{PLANNER_VERSION}:{git_commit}"
@@ -48,6 +198,11 @@ def _plan(args: argparse.Namespace) -> int:
         planner_version=PLANNER_VERSION,
         git_commit=git_commit,
         build_identity=build_identity,
+        motion_mode=motion_mode,
+        execution_mode=requested_execution_mode,
+        execution_blend=execution_blend,
+        execution_adapter=COHERENT_EXECUTION_VERSION if requested_execution_mode == "coherent" else execution_adapter,
+        execution_diagnostics=execution_result,
     )
     result = validate_trace(args.output)
     result["trace_sha256"] = digest
@@ -63,6 +218,12 @@ def _plan(args: argparse.Namespace) -> int:
             "planner_version": PLANNER_VERSION,
             "skill_level": profile.skill_level,
             "effort_level": profile.effort_level,
+            "execution_model": model_hash,
+            "execution_blend": execution_blend,
+            "execution_mode": requested_execution_mode,
+            "execution_adapter": COHERENT_EXECUTION_VERSION if requested_execution_mode == "coherent" else execution_adapter,
+            "execution_boundary_segments": boundary_segments,
+            "motion_mode": motion_mode,
         },
         separators=(",", ":"),
         sort_keys=True,
@@ -83,10 +244,30 @@ def _plan(args: argparse.Namespace) -> int:
         captured_replay_sha256=None,
         profile_percentile=profile.percentile,
         seed=profile.seed,
+        motion_mode=motion_mode,
+        execution_mode=requested_execution_mode,
+        execution_blend=execution_blend,
     )
     manifest_path = Path(args.manifest or f"{args.output}.manifest.json")
     manifest_path.write_text(json.dumps(manifest.as_dict(), indent=2, sort_keys=True), encoding="utf-8")
     result["manifest"] = str(manifest_path)
+    if execution_result is not None:
+        result["execution"] = execution_result
+        print(
+            "[execution] "
+            f"requested={execution_result.get('requested_mode', requested_execution_mode)} "
+            f"effective={execution_result.get('effective_mode', 'unknown')} "
+            f"blend={execution_result.get('blend', execution_blend):.3f} "
+            f"model_sha256={execution_result.get('model_sha256') or 'none'} "
+            f"segments={execution_result.get('segment_count', 0)} "
+            f"learned={execution_result.get('learned_segment_count', 0)} "
+            f"fallback={execution_result.get('fallback_segment_count', 0)}"
+            + (
+                f" reason={execution_result.get('fallback_reason')}"
+                if execution_result.get("fallback_reason")
+                else ""
+            )
+        )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
@@ -118,6 +299,133 @@ def _fit(args: argparse.Namespace) -> int:
 def _evaluate(args: argparse.Namespace) -> int:
     print(json.dumps(evaluate(args.human, args.synthetic, args.output, args.seed), indent=2, sort_keys=True))
     return 0
+
+
+def _parse_segment_indices(value: str | None) -> list[int]:
+    if value is None or not value.strip():
+        return []
+    try:
+        result = sorted({int(item.strip()) for item in value.split(",") if item.strip()})
+    except ValueError as error:
+        raise ValueError("execution boundary segments must be comma-separated integers") from error
+    if any(item < 0 for item in result):
+        raise ValueError("execution boundary segments must be non-negative")
+    return result
+
+
+def _execution_audit(args: argparse.Namespace) -> int:
+    report = audit_corpus(args.manifest)
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.output).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+def _execution_source_audit(args: argparse.Namespace) -> int:
+    """Summarize a public archive without admitting it to human training."""
+    report = summarize_index(args.index)
+    write_json(args.output, report)
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+def _execution_candidate_audit(args: argparse.Namespace) -> int:
+    candidate = json.loads(Path(args.candidate_report).read_text(encoding="utf-8"))
+    evidence = (
+        json.loads(Path(args.score_evidence).read_text(encoding="utf-8"))
+        if args.score_evidence
+        else None
+    )
+    result = {
+        "schema_version": 1,
+        "provenance_review": audit_candidate_pilot(candidate, evidence),
+        "decoded_audit": audit_decoded_candidates(candidate, args.decoded_root, args.map_plan_root),
+    }
+    result["admission_table"] = build_admission_table(candidate, evidence or {}, result["decoded_audit"])
+    if args.manifest:
+        manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+        result["player_hash_salt_id"] = manifest.get("player_hash_salt_id")
+        result["player_hash_salt_configured"] = bool(manifest.get("player_hash_salt_id"))
+        result["salt_value_exposed_in_report"] = False
+    write_json(args.output, result)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _execution_exploratory_train(args: argparse.Namespace) -> int:
+    candidate = json.loads(Path(args.candidate_report).read_text(encoding="utf-8"))
+    evidence = json.loads(Path(args.score_evidence).read_text(encoding="utf-8"))
+    audit = json.loads(Path(args.candidate_audit).read_text(encoding="utf-8"))
+    report = train_exploratory_candidate(
+        candidate,
+        evidence,
+        audit["decoded_audit"],
+        args.decoded_root,
+        args.map_plan_root,
+        args.output,
+        seed=args.seed,
+        max_windows_per_player=args.max_windows_per_player,
+    )
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report.get("status") == "exploratory_not_promoted" else 1
+
+
+def _execution_train(args: argparse.Namespace) -> int:
+    report = train_candidate(args.manifest, args.output, seed=args.seed)
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report.get("status") != "blocked" else 2
+
+
+def _execution_extract(args: argparse.Namespace) -> int:
+    rows, report = load_execution_corpus(args.manifest)
+    encoded_rows = []
+    for row in rows:
+        encoded = dict(row)
+        for key in ("x", "y", "phase_increments"):
+            if key in encoded:
+                encoded[key] = list(encoded[key])
+        encoded_rows.append(encoded)
+    result = {"schema_version": 1, "report": report, "windows": encoded_rows}
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.output).write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+def _execution_evaluate(args: argparse.Namespace) -> int:
+    report = evaluate_candidate(args.manifest, args.candidate, split=args.split)
+    if args.output:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+def _execution_inspect(args: argparse.Namespace) -> int:
+    print(json.dumps(inspect_candidate(args.candidate), indent=2, sort_keys=True))
+    return 0
+
+
+def _execution_retrain(args: argparse.Namespace) -> int:
+    report = retrain_candidate(args.manifest, args.previous, args.output, seed=args.seed)
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report.get("status") != "blocked" else 2
+
+
+def _execution_benchmark(args: argparse.Namespace) -> int:
+    report = run_paired_benchmark_for_map(
+        args.map_plan,
+        model_path=args.model,
+        blend=args.blend,
+        sample_rate_hz=args.sample_rate,
+        skill_group=args.skill_group,
+        effort_level=args.effort,
+        seed=args.seed,
+        export_dir=args.export_dir,
+    )
+    write_paired_report(report, args.output)
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report.get("status") == "complete" and report["route_identity"]["all_pairs_shared_frozen_route"] else 1
 
 
 def _parse_seeds(value: str) -> tuple[int, ...]:
@@ -244,6 +552,12 @@ def _run_auto(args: argparse.Namespace) -> int:
     runner = root / "research" / "HumanSim.Runner" / "bin" / "Debug" / "net8.0-windows" / "HumanSim.Runner.exe"
     if not runner.exists():
         raise RuntimeError("Build HumanSim.Runner before launching automatic planning")
+    execution_mode, execution_blend, execution_model = _resolve_auto_execution(
+        root,
+        args.execution_mode,
+        args.execution_model,
+        args.execution_blend,
+    )
     command = [
         str(runner),
         "--client",
@@ -258,6 +572,12 @@ def _run_auto(args: argparse.Namespace) -> int:
         str(args.skill if args.skill is not None else args.percentile),
         "--effort",
         str(args.effort),
+        "--execution-mode",
+        execution_mode,
+        "--motion-mode",
+        args.motion_mode or args.mode,
+        "--execution-blend",
+        str(execution_blend),
         "--sample-rate",
         str(args.sample_rate),
         "--cursor-rate",
@@ -277,10 +597,41 @@ def _run_auto(args: argparse.Namespace) -> int:
     ]
     if args.osu_storage:
         command.extend(["--osu-storage", str(Path(args.osu_storage).resolve())])
+    if execution_model:
+        command.extend(["--execution-model", str(Path(execution_model).resolve())])
     log_path = args.log_path or root / "research" / "human-sim" / "output" / f"auto-run-{datetime.now():%Y%m%d-%H%M%S}.log"
     command.extend(["--log-path", str(Path(log_path).resolve())])
     completed = subprocess.run(command, check=False, env=_runner_environment())
     return int(completed.returncode)
+
+
+def _resolve_auto_execution(
+    root: Path,
+    execution_mode: str | None,
+    execution_model: str | None,
+    execution_blend: float | None,
+) -> tuple[str, float, str | None]:
+    """Resolve the HSR default without weakening the explicit math control."""
+    mode = execution_mode or "coherent"
+    if mode not in {"math-only", "hybrid", "coherent"}:
+        raise ValueError("execution mode must be math-only, hybrid, or coherent")
+    blend = float(execution_blend if execution_blend is not None else (0.0 if mode == "math-only" else 1.0))
+    if not math.isfinite(blend) or not 0.0 <= blend <= 1.0:
+        raise ValueError("execution blend must be between 0 and 1")
+    if mode == "math-only":
+        if execution_model or blend > 0.0:
+            raise ValueError("math-only execution cannot receive an execution model or non-zero execution blend")
+        return mode, 0.0, None
+    if mode == "coherent" and blend <= 0.0:
+        raise ValueError("coherent execution requires a positive blend; use math-only for the control arm")
+    model = execution_model or str(
+        root / "research" / "human-sim"
+        / ("models/experimental/seed101-math-residual-g100.json" if mode == "coherent"
+           else "output/training/path-execution-ai-v2-final3/model.json")
+    )
+    if blend > 0.0 and not Path(model).is_file():
+        raise RuntimeError(f"{mode} HSR requires its execution model artifact: {model}")
+    return mode, blend, model
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -300,6 +651,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable stochastic aim/timing/error terms for infrastructure calibration",
     )
     plan.add_argument("--model-bundle", help="Optional fitted joblib bundle from the fit command")
+    plan.add_argument(
+        "--execution-model",
+        help="Optional immutable execution-phase candidate; it can only warp an already generated mathematical trace",
+    )
+    plan.add_argument(
+        "--execution-mode",
+        choices=("math-only", "hybrid", "coherent"),
+        help="Explicit execution dispatch mode; coherent uses the grouped trajectory test model",
+    )
+    plan.add_argument(
+        "--execution-blend",
+        type=float,
+        default=0.0,
+        help="Offline phase blend in [0,1]; zero is byte-identical math execution",
+    )
+    plan.add_argument(
+        "--execution-adapter",
+        choices=("legacy", "time-aware-v3", "boundary-aware-v2"),
+        default="legacy",
+        help="Explicit offline execution adapter; legacy remains the default",
+    )
+    plan.add_argument(
+        "--execution-boundary-segments",
+        help="Comma-separated zero-based segment indices; required only by boundary-aware-v2",
+    )
+    plan.add_argument(
+        "--motion-mode",
+        choices=("profile", "perfect"),
+        help="Explicit mathematical motion mode; perfect is a machine baseline, profile is stochastic research motion",
+    )
     plan.add_argument("--corpus-manifest", help="Optional corpus manifest to hash into the RunManifest")
     plan.add_argument("--client-build", help="Optional research client executable to hash into the RunManifest")
     plan.add_argument("--manifest", help="RunManifest output path; defaults beside the trace")
@@ -328,6 +709,107 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("output")
     evaluate_parser.add_argument("--seed", type=int, default=1)
     evaluate_parser.set_defaults(handler=_evaluate)
+    execution_audit = subparsers.add_parser(
+        "execution-audit",
+        aliases=["audit-execution"],
+        help="Audit the explicitly listed human-only execution corpus",
+    )
+    execution_audit.add_argument("manifest")
+    execution_audit.add_argument("output")
+    execution_audit.set_defaults(handler=_execution_audit)
+    execution_source_audit = subparsers.add_parser(
+        "execution-source-audit",
+        aliases=["source-audit-execution"],
+        help="Summarize public replay-archive metadata without assigning human skill tiers",
+    )
+    execution_source_audit.add_argument("index")
+    execution_source_audit.add_argument("output")
+    execution_source_audit.set_defaults(handler=_execution_source_audit)
+    execution_candidate_audit = subparsers.add_parser(
+        "execution-candidate-audit",
+        aliases=["candidate-audit-execution"],
+        help="Review and measure decoded public candidates without human-training admission",
+    )
+    execution_candidate_audit.add_argument("candidate_report")
+    execution_candidate_audit.add_argument("decoded_root")
+    execution_candidate_audit.add_argument("map_plan_root")
+    execution_candidate_audit.add_argument("output")
+    execution_candidate_audit.add_argument("--score-evidence")
+    execution_candidate_audit.add_argument("--manifest")
+    execution_candidate_audit.set_defaults(handler=_execution_candidate_audit)
+    execution_exploratory_train = subparsers.add_parser(
+        "execution-exploratory-train",
+        aliases=["exploratory-train-execution"],
+        help="Fit a separate skill-unknown exploratory phase candidate from admitted public candidates",
+    )
+    execution_exploratory_train.add_argument("candidate_report")
+    execution_exploratory_train.add_argument("score_evidence")
+    execution_exploratory_train.add_argument("candidate_audit")
+    execution_exploratory_train.add_argument("decoded_root")
+    execution_exploratory_train.add_argument("map_plan_root")
+    execution_exploratory_train.add_argument("output")
+    execution_exploratory_train.add_argument("--seed", type=int, default=42)
+    execution_exploratory_train.add_argument("--max-windows-per-player", type=int, default=100)
+    execution_exploratory_train.set_defaults(handler=_execution_exploratory_train)
+    execution_train = subparsers.add_parser(
+        "execution-train",
+        aliases=["train-execution"],
+        help="Train and register a CPU execution-phase candidate from verified human replays",
+    )
+    execution_train.add_argument("manifest")
+    execution_train.add_argument("output")
+    execution_train.add_argument("--seed", type=int, default=42)
+    execution_train.set_defaults(handler=_execution_train)
+    execution_extract = subparsers.add_parser(
+        "execution-extract",
+        aliases=["extract-execution"],
+        help="Extract order-constrained phase labels from the explicitly listed human corpus",
+    )
+    execution_extract.add_argument("manifest")
+    execution_extract.add_argument("output")
+    execution_extract.set_defaults(handler=_execution_extract)
+    execution_evaluate = subparsers.add_parser(
+        "execution-evaluate",
+        aliases=["evaluate-execution"],
+        help="Evaluate an execution candidate on validation or the sealed test split",
+    )
+    execution_evaluate.add_argument("manifest")
+    execution_evaluate.add_argument("candidate")
+    execution_evaluate.add_argument("--split", choices=("train", "validation", "test"), default="test")
+    execution_evaluate.add_argument("--output")
+    execution_evaluate.set_defaults(handler=_execution_evaluate)
+    execution_inspect = subparsers.add_parser(
+        "execution-inspect",
+        aliases=["inspect-execution", "model-inspect"],
+        help="Inspect the immutable execution candidate contract and provenance",
+    )
+    execution_inspect.add_argument("candidate")
+    execution_inspect.set_defaults(handler=_execution_inspect)
+    execution_retrain = subparsers.add_parser(
+        "execution-retrain",
+        aliases=["retrain-execution"],
+        help="Full-retrain a new execution candidate and compare validation with a prior candidate",
+    )
+    execution_retrain.add_argument("manifest")
+    execution_retrain.add_argument("previous")
+    execution_retrain.add_argument("output")
+    execution_retrain.add_argument("--seed", type=int, default=42)
+    execution_retrain.set_defaults(handler=_execution_retrain)
+    execution_benchmark = subparsers.add_parser(
+        "execution-benchmark",
+        aliases=["benchmark-execution"],
+        help="Run paired current-runtime-trace math-only versus execution-phase hybrid metrics",
+    )
+    execution_benchmark.add_argument("map_plan")
+    execution_benchmark.add_argument("output")
+    execution_benchmark.add_argument("--model")
+    execution_benchmark.add_argument("--blend", type=float, default=1.0)
+    execution_benchmark.add_argument("--sample-rate", type=int, default=500)
+    execution_benchmark.add_argument("--skill-group", choices=("beginner", "intermediate", "expert", "competitive"), default="intermediate")
+    execution_benchmark.add_argument("--effort", type=float, default=100.0)
+    execution_benchmark.add_argument("--seed", type=int, default=42)
+    execution_benchmark.add_argument("--export-dir")
+    execution_benchmark.set_defaults(handler=_execution_benchmark)
     benchmark = subparsers.add_parser("benchmark", help="Run deterministic multi-map statistical planner regression checks")
     benchmark.add_argument("--scope", choices=("compact", "default", "full"), default="compact")
     benchmark.add_argument("--map", dest="map_paths", action="append", help="Explicit map plan; repeat for multiple maps")
@@ -401,6 +883,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     auto_run.add_argument("client")
     auto_run.add_argument("--mode", choices=("perfect", "profile"), default="perfect")
+    auto_run.add_argument(
+        "--motion-mode",
+        choices=("profile", "perfect"),
+        help="Explicit motion mode forwarded to the planner; defaults to --mode",
+    )
+    auto_run.add_argument(
+        "--execution-mode",
+        choices=("math-only", "hybrid", "coherent"),
+        help="Execution path; coherent selects the frozen grouped trajectory test model",
+    )
+    auto_run.add_argument(
+        "--execution-model",
+        help="Immutable execution-phase model; defaults to the final3 V2 artifact in hybrid mode",
+    )
+    auto_run.add_argument(
+        "--execution-blend",
+        type=float,
+        default=None,
+        help="Hybrid phase blend in [0,1]; defaults to 1 for V2 hybrid and 0 for math-only",
+    )
     auto_run.add_argument("--percentile", type=float, choices=SKILL_PRESETS, default=99.5)
     auto_run.add_argument("--seed", type=int, default=42)
     auto_run.add_argument("--skill", type=float, help="Skill level 0-100 (default: percentile anchor)")

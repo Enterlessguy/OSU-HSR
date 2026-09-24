@@ -44,9 +44,9 @@ function Get-PlannerVersion {
 }
 
 function Get-CheckoutIdentity {
-    $branch = ([string](Invoke-GitChecked @("branch", "--show-current"))).Trim()
+    $branch = (@(Invoke-GitChecked @("branch", "--show-current")) -join "").Trim()
     if ([string]::IsNullOrWhiteSpace($branch)) {
-        throw "Detached or ambiguous HEAD; refusing to build or launch."
+        $branch = "(detached HEAD)"
     }
     $commit = ([string](Invoke-GitChecked @("rev-parse", "HEAD"))).Trim()
     $status = @(Invoke-GitChecked @("status", "--porcelain=v1"))
@@ -255,6 +255,7 @@ try {
     $client = Join-Path $root "osu.Desktop\bin\Debug\net8.0\osu!.exe"
     $runnerProject = Join-Path $root "research\HumanSim.Runner\HumanSim.Runner.csproj"
     $runnerDll = Join-Path $root "research\HumanSim.Runner\bin\Debug\net8.0-windows\HumanSim.Runner.dll"
+    $coherentModel = Join-Path $root "research\human-sim\models\experimental\seed101-math-residual-g100.json"
     foreach ($required in @($dotnet, $python, $humanSim)) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
             throw "Required local tool is missing: $required"
@@ -270,7 +271,11 @@ try {
         (Join-Path $root "research\HumanSim.ReplayExtractor\HumanSim.ReplayExtractor.csproj"),
         $runnerProject
     )) {
-        Invoke-NativeChecked $dotnet @("build", $project, "--configfile", (Join-Path $root "NuGet.config"))
+        $buildArguments = @("build", $project, "--configfile", (Join-Path $root "NuGet.config"))
+        if (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $project) "obj\project.assets.json") -PathType Leaf) {
+            $buildArguments += "--no-restore"
+        }
+        Invoke-NativeChecked $dotnet $buildArguments
     }
     if (-not (Test-Path -LiteralPath $runnerDll -PathType Leaf)) { throw "Runner build output is missing: $runnerDll" }
 
@@ -295,10 +300,19 @@ try {
     if (-not (Test-Path -LiteralPath $client -PathType Leaf)) { throw "Built client is missing: $client" }
     Write-Host "=== [5/5] Launching guarded auto-run ===" -ForegroundColor Green
     if ($mode -eq "perfect") {
-        & $humanSim auto-run $client --mode perfect
+        & $humanSim auto-run $client --mode perfect --motion-mode perfect --execution-mode math-only --execution-blend 0
     }
     else {
-        & $humanSim auto-run $client --mode profile --skill $skill --effort $effort
+        if (-not (Test-Path -LiteralPath $coherentModel -PathType Leaf)) {
+            throw "Experimental coherent model is missing: $coherentModel"
+        }
+        $modelHash = (Get-FileHash -LiteralPath $coherentModel -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($modelHash -ne "e1cd5bcd7ca40d8f060277c9a0ee176fbf625bcc0401c66716044a61891a7074") {
+            throw "Experimental coherent model hash mismatch: $modelHash"
+        }
+        Write-Host "Experimental gated hybrid: opened-validation circle component only; full OSI V2 unconfirmed." -ForegroundColor Yellow
+        & $humanSim auto-run $client --mode profile --motion-mode profile --skill $skill --effort $effort `
+            --execution-mode coherent --execution-model $coherentModel --execution-blend 1
     }
     $exitCode = $LASTEXITCODE
     Write-Host "Runner exited with code $exitCode." -ForegroundColor Yellow

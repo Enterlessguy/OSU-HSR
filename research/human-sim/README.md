@@ -4,6 +4,11 @@ This directory contains the model, trace planner, public replay collector, and
 validation tools. It is intentionally separate from real-time input dispatch.
 Generated files are permanently marked as synthetic.
 
+The [movement roadmap](MOVEMENT_ROADMAP.md) covers the v2.16 short-interval and
+free-roam changes, human-only replay collection across four skill groups,
+the CPU movement-training pilot, evaluation, and repeatable retraining.
+No existing local HSR runs are eligible for that training corpus.
+
 ## Setup
 
 ```powershell

@@ -11,7 +11,7 @@ from .schemas import HumanProfile, MapObject, MapPlan, TraceFrame
 
 # Bump when trace-generation behaviour changes so the runner's content-addressed
 # trace cache is invalidated (the configuration hash includes this string).
-PLANNER_VERSION = "timing-sync-v2.15"
+PLANNER_VERSION = "timing-sync-v2.17-coherent-test"
 
 
 @dataclass(frozen=True)
@@ -1220,7 +1220,7 @@ class HumanTracePlanner:
         # End the doodle at a target-relative staging point. The ordinary
         # transition owns the final approach, while the reserved distance
         # guarantees that the return never needs a late flick.
-        approach_distance = 42.0
+        approach_distance = float(self.rng.uniform(110.0, 180.0))
         fitts_ms = (
             (70.0 + 92.0 * math.log2(approach_distance / 64.0 + 1.0))
             * (1.08 - self.profile.percentile / 600.0)
@@ -1238,18 +1238,17 @@ class HumanTracePlanner:
         if budget_ms < 520.0:
             return None, None
 
-        # Select a playfield-safe roam centre well away from the next object.
-        # Trying several directions avoids edge clipping collapsing the centre
-        # back onto a target near a playfield boundary.
+        # Select a playfield-safe roam centre away from the next object without
+        # attaching its coordinates to that target.
         centre_candidates: list[np.ndarray] = []
         for _ in range(8):
-            centre_distance = self.rng.uniform(115.0, 185.0)
-            centre_angle = self.rng.uniform(0.0, math.tau)
-            candidate = target + centre_distance * np.array(
-                [math.cos(centre_angle), math.sin(centre_angle)]
-            )
-            centre_candidates.append(np.clip(candidate, [70.0, 70.0], [442.0, 314.0]))
-        center = max(centre_candidates, key=lambda value: float(np.linalg.norm(value - target)))
+            # Draw intentions in playfield coordinates. Translating the next
+            # target must not translate the entire free-roam shape with it.
+            centre_candidates.append(self.rng.uniform([100.0, 100.0], [412.0, 284.0]))
+        center = next(
+            (value for value in centre_candidates if np.linalg.norm(value - target) >= 100.0),
+            max(centre_candidates, key=lambda value: float(np.linalg.norm(value - target))),
+        )
 
         # Pattern parameters are drawn once per idle window so the shape stays
         # stable for its whole duration (a pattern that redraws itself every
@@ -1271,7 +1270,7 @@ class HumanTracePlanner:
         speed_phase = self.rng.uniform(0.0, math.tau)
         speed_phase_2 = self.rng.uniform(0.0, math.tau)
         kind_roll = self.rng.random()
-        kind = "figure8" if kind_roll < 0.55 else "circle" if kind_roll < 0.82 else "random"
+        kind = "figure8" if kind_roll < 0.12 else "circle" if kind_roll < 0.20 else "random"
         rand_freqs = [self.rng.uniform(0.18, 0.62) for _ in range(3)]
         rand_amps = [self.rng.uniform(14.0, 32.0) * amplitude_scale for _ in range(3)]
         rand_phases = [self.rng.uniform(0.0, math.tau) for _ in range(3)]
@@ -1499,6 +1498,28 @@ class HumanTracePlanner:
             )
 
         base_positions, base_velocities, base_accelerations = solve_base()
+        # A very short, unreachable target must not demand a new direction in
+        # a few milliseconds. Continue the inherited motion with bounded jerk;
+        # accept the miss rather than manufacturing an endpoint-constrained flick.
+        dense_inertial = not target_reached and actual_duration < 50.0
+        if dense_inertial:
+            seconds = actual_duration / 1000.0
+            response_seconds = max(0.080, seconds)
+            desired_velocity = _normalised(target - solver_start) * max_speed
+            desired_acceleration = (desired_velocity - start_velocity) / response_seconds
+            acceleration_limit = max(22_000.0, max_speed * 8.0)
+            desired_acceleration *= min(1.0, acceleration_limit / max(np.linalg.norm(desired_acceleration), 1e-9))
+            jerk = (desired_acceleration - start_acceleration) / response_seconds
+            jerk_limit = min(750_000.0, acceleration_limit / 0.050)
+            jerk *= min(1.0, jerk_limit / max(np.linalg.norm(jerk), 1e-9))
+            elapsed = ((times - segment_start) / 1000.0)[:, None]
+            base_positions = solver_start + start_velocity * elapsed + 0.5 * start_acceleration * elapsed**2 + jerk * elapsed**3 / 6.0
+            base_velocities = start_velocity + start_acceleration * elapsed + 0.5 * jerk * elapsed**2
+            base_accelerations = start_acceleration + jerk * elapsed
+            solver_target = base_positions[-1].copy()
+            solver_endpoint_velocity = base_velocities[-1].copy()
+            solver_endpoint_acceleration = base_accelerations[-1].copy()
+            state.correction *= math.exp(-actual_duration / 40.0)
         # The geometry-derived knot velocity is a local continuity target, not
         # permission for a quintic overshoot to consume the whole movement in
         # a flick.  When there is enough time to reach the target, gently
@@ -1635,6 +1656,7 @@ class HumanTracePlanner:
                 "endpoint_derivative_scale": derivative_scale,
                 "realized": self._continuous_endpoint_emitted,
                 "target_reached": target_reached,
+                "dense_inertial": dense_inertial,
                 "break_before": break_before,
             }
         )

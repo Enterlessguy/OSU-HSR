@@ -13,7 +13,8 @@ namespace HumanSim.Runner;
 internal static class Program
 {
     private const int protocolVersion = 1;
-    internal const string plannerVersion = "timing-sync-v2.15";
+    internal const string plannerVersion = "timing-sync-v2.17-coherent-test";
+    private const string coherentAdapterVersion = "math-residual-lateral-gated-runtime-v1";
 
     private static readonly object prePlanLock = new();
     private static readonly Dictionary<string, Task<Trace>> prePlanTasks = new(StringComparer.Ordinal);
@@ -304,6 +305,11 @@ internal static class Program
 
         string exporter = Path.Combine(workspaceRoot, "research", "HumanSim.MapExporter", "bin", "Debug", "net8.0", "HumanSim.MapExporter.exe");
         string planner = Path.Combine(workspaceRoot, "research", "human-sim", ".venv", "Scripts", "human-sim.exe");
+        if (!File.Exists(planner))
+        {
+            string sharedPlanner = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "OSU map  human simulator", "research", "human-sim", ".venv", "Scripts", "human-sim.exe");
+            if (File.Exists(sharedPlanner)) planner = sharedPlanner;
+        }
         if (!File.Exists(exporter))
             throw new FileNotFoundException("HumanSim.MapExporter has not been built", exporter);
         if (!File.Exists(planner))
@@ -346,8 +352,16 @@ internal static class Program
                 "--skill", (options.SkillLevel >= 0 ? options.SkillLevel : options.Percentile).ToString("0.###", CultureInfo.InvariantCulture),
                 "--effort", options.EffortLevel.ToString("0.###", CultureInfo.InvariantCulture),
                 "--sample-rate", sampleRate.ToString(CultureInfo.InvariantCulture),
+                "--motion-mode", options.MotionMode,
+                "--execution-mode", options.ExecutionMode,
+                "--execution-blend", options.ExecutionBlend.ToString("R", CultureInfo.InvariantCulture),
                 "--client-build", executablePath,
             };
+            if (options.ExecutionModelPath != null)
+            {
+                planArguments.Add("--execution-model");
+                planArguments.Add(options.ExecutionModelPath);
+            }
             if (options.AutoPlanMode == "perfect")
                 planArguments.Add("--perfect-baseline");
             await runTool("human-sim planner", planner, Path.GetDirectoryName(planner)!, planArguments, options.PlanningTimeoutSeconds).ConfigureAwait(false);
@@ -392,7 +406,8 @@ internal static class Program
         string modsKey = !mods.Any() ? $"NM-r{rateKey}" : $"{string.Join('-', mods.Order(StringComparer.Ordinal))}-r{rateKey}";
         string modeKey = options.AutoPlanMode == "perfect" ? "perfect" : "profile";
         double effectiveSkill = options.SkillLevel >= 0 ? options.SkillLevel : options.Percentile;
-        return $"{normalizedHash[..12]}-{modsKey}-p{options.Percentile.ToString("0.###", CultureInfo.InvariantCulture)}-s{options.Seed}-sk{effectiveSkill.ToString("0.###", CultureInfo.InvariantCulture)}-ef{options.EffortLevel.ToString("0.###", CultureInfo.InvariantCulture)}-{options.SampleRateHz}hz-{modeKey}";
+        string modelKey = options.ExecutionModelPath == null ? "none" : sha256(options.ExecutionModelPath)[..12];
+        return $"{normalizedHash[..12]}-{modsKey}-p{options.Percentile.ToString("0.###", CultureInfo.InvariantCulture)}-s{options.Seed}-sk{effectiveSkill.ToString("0.###", CultureInfo.InvariantCulture)}-ef{options.EffortLevel.ToString("0.###", CultureInfo.InvariantCulture)}-{options.SampleRateHz}hz-{modeKey}-ex{options.ExecutionMode}-xm{modelKey}";
     }
 
     private static bool isUltraDenseOsuFile(string path)
@@ -448,6 +463,7 @@ internal static class Program
             if (Math.Abs(header.ClockRate - clockRate) > 1e-9) return null;
             if (header.SampleRateHz != options.SampleRateHz) return null;
             if (header.DiagnosticPerfect != (options.AutoPlanMode == "perfect")) return null;
+            if (!StringComparer.OrdinalIgnoreCase.Equals(header.ExecutionMode, options.ExecutionMode)) return null;
             if (!StringComparer.OrdinalIgnoreCase.Equals(header.PlannerVersion, plannerVersion)) return null;
             string expectedGitCommit = gitCommit(workspaceRoot);
             if (!String.Equals(expectedGitCommit, "unknown", StringComparison.OrdinalIgnoreCase)
@@ -479,12 +495,26 @@ internal static class Program
 
     private static string canonicalConfiguration(Options options)
     {
-        // Must match human_sim.cli._plan's deterministic configuration JSON:
-        // sorted keys, compact separators, and Python-style float formatting.
-        // Sorted key order must match Python: "percentile" < "perfect_baseline".
+        // Must match human_sim.cli._plan's deterministic sorted compact JSON.
         double effectiveSkill = options.SkillLevel >= 0 ? options.SkillLevel : options.Percentile;
-        string json = $"{{\"effort_level\":{pythonFloat(options.EffortLevel)},\"percentile\":{pythonFloat(options.Percentile)},\"perfect_baseline\":{(options.AutoPlanMode == "perfect" ? "true" : "false")},\"planner_version\":\"{plannerVersion}\",\"sample_rate_hz\":{options.SampleRateHz},\"seed\":{options.Seed},\"skill_level\":{pythonFloat(effectiveSkill)}}}";
+        string modelHash = options.ExecutionModelPath == null ? "null" : $"\"{executionModelCanonicalSha(options.ExecutionModelPath)}\"";
+        string adapter = options.ExecutionMode == "coherent" ? coherentAdapterVersion : "legacy";
+        bool perfect = options.AutoPlanMode == "perfect" || options.MotionMode == "perfect";
+        string json = $"{{\"effort_level\":{pythonFloat(options.EffortLevel)},\"execution_adapter\":\"{adapter}\",\"execution_blend\":{pythonFloat(options.ExecutionBlend)},\"execution_boundary_segments\":[],\"execution_model\":{modelHash},\"execution_mode\":\"{options.ExecutionMode}\",\"motion_mode\":\"{options.MotionMode}\",\"percentile\":{pythonFloat(options.Percentile)},\"perfect_baseline\":{(perfect ? "true" : "false")},\"planner_version\":\"{plannerVersion}\",\"sample_rate_hz\":{options.SampleRateHz},\"seed\":{options.Seed},\"skill_level\":{pythonFloat(effectiveSkill)}}}";
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant();
+    }
+
+    private static string executionModelCanonicalSha(string path)
+    {
+        using JsonDocument document = JsonDocument.Parse(File.ReadAllBytes(path));
+        foreach (string property in new[] { "sha256", "model_sha256" })
+        {
+            if (document.RootElement.TryGetProperty(property, out JsonElement value)
+                && value.ValueKind == JsonValueKind.String
+                && !String.IsNullOrWhiteSpace(value.GetString()))
+                return value.GetString()!;
+        }
+        throw new InvalidDataException($"execution model has no canonical hash: {path}");
     }
 
     private static string gitCommit(string workspaceRoot)
@@ -1170,6 +1200,10 @@ internal sealed record Options(
     int Seed,
     double SkillLevel,
     double EffortLevel,
+    string MotionMode,
+    string ExecutionMode,
+    string? ExecutionModelPath,
+    double ExecutionBlend,
     int SampleRateHz,
     int CursorRateHz,
     double InputLeadMs,
@@ -1220,12 +1254,26 @@ internal sealed record Options(
         double inputLeadMs = double.Parse(values.GetValueOrDefault("--input-lead-ms", "0"), CultureInfo.InvariantCulture);
         double skillLevel = double.Parse(values.GetValueOrDefault("--skill", "-1"), CultureInfo.InvariantCulture);
         double effortLevel = double.Parse(values.GetValueOrDefault("--effort", "100"), CultureInfo.InvariantCulture);
+        string motionMode = values.GetValueOrDefault("--motion-mode", autoPlan ?? "profile").ToLowerInvariant();
+        string executionMode = values.GetValueOrDefault("--execution-mode", "math-only").ToLowerInvariant();
+        string? executionModel = values.GetValueOrDefault("--execution-model");
+        double executionBlend = double.Parse(values.GetValueOrDefault("--execution-blend", executionMode == "math-only" ? "0" : "1"), CultureInfo.InvariantCulture);
         if (sampleRate is < 60 or > 1000) throw new ArgumentException("--sample-rate must be between 60 and 1000 Hz.");
         if (cursorRate is < 60 or > 1000) throw new ArgumentException("--cursor-rate must be between 60 and 1000 Hz.");
         if (!double.IsFinite(inputLeadMs) || inputLeadMs is < 0 or > 50)
             throw new ArgumentException("--input-lead-ms must be between 0 and 50 ms.");
         if (!double.IsFinite(skillLevel) || skillLevel is < -1 or > 100) throw new ArgumentException("--skill must be between 0 and 100.");
         if (!double.IsFinite(effortLevel) || effortLevel is < 0 or > 100) throw new ArgumentException("--effort must be between 0 and 100.");
+        if (motionMode is not ("profile" or "perfect")) throw new ArgumentException("--motion-mode must be profile or perfect.");
+        if (executionMode is not ("math-only" or "hybrid" or "coherent")) throw new ArgumentException("--execution-mode must be math-only, hybrid, or coherent.");
+        if (!double.IsFinite(executionBlend) || executionBlend is < 0 or > 1) throw new ArgumentException("--execution-blend must be between 0 and 1.");
+        if (executionMode == "math-only" && (executionModel != null || executionBlend > 0)) throw new ArgumentException("math-only execution cannot receive a model or non-zero blend.");
+        if (executionMode != "math-only" && executionBlend > 0 && executionModel == null) throw new ArgumentException($"{executionMode} execution requires --execution-model.");
+        if (executionModel != null)
+        {
+            executionModel = Path.GetFullPath(executionModel);
+            if (!File.Exists(executionModel)) throw new FileNotFoundException("execution model was not found", executionModel);
+        }
         return new Options(
             values.GetValueOrDefault("--client") ?? throw new ArgumentException("--client is required"),
             trace,
@@ -1238,6 +1286,10 @@ internal sealed record Options(
             int.Parse(values.GetValueOrDefault("--seed", "42"), CultureInfo.InvariantCulture),
             skillLevel,
             effortLevel,
+            motionMode,
+            executionMode,
+            executionModel,
+            executionBlend,
             sampleRate,
             cursorRate,
             inputLeadMs,
@@ -1251,7 +1303,7 @@ internal sealed record Options(
     }
 
     private static ArgumentException usage() => new(
-        "Usage: HumanSim.Runner --client <osu.Desktop.exe> (--trace <trace.gz> | --auto-plan <perfect|profile>) [--percentile 99.5] [--seed 42] [--skill 0-100] [--effort 0-100] [--sample-rate 500] [--cursor-rate 1000] [--input-lead-ms 0] [--log-path <file>] [--timing-only] [--disable-timer-resolution] [--disable-clock-fit]");
+        "Usage: HumanSim.Runner --client <osu.Desktop.exe> (--trace <trace.gz> | --auto-plan <perfect|profile>) [--motion-mode <profile|perfect>] [--execution-mode <math-only|hybrid|coherent>] [--execution-model <json>] [--execution-blend 0-1] [--percentile 99.5] [--seed 42] [--skill 0-100] [--effort 0-100] [--sample-rate 500] [--cursor-rate 1000] [--input-lead-ms 0] [--log-path <file>] [--timing-only] [--disable-timer-resolution] [--disable-clock-fit]");
 
     private static ushort parseKey(string value)
     {
@@ -1280,6 +1332,10 @@ internal sealed class Trace
             throw new InvalidDataException($"Trace planner identity is missing or stale; expected {Program.plannerVersion}.");
         if (header.SampleRateHz is < 60 or > 1000)
             throw new InvalidDataException("Trace sample rate must be between 60 and 1000 Hz.");
+        if (header.ExecutionMode == "coherent" &&
+            (header.ExecutionEffectiveMode != "coherent" || header.ExecutionFallback ||
+             header.ExecutionLearnedSegmentCount <= 0 || header.ExecutionChangedSampleCount <= 0))
+            throw new InvalidDataException("Coherent AI produced no delivered learned movement; refusing an all-math fallback trace.");
 
         var frames = new List<TraceFrame>();
         long previous = -1;
@@ -1325,6 +1381,11 @@ internal sealed class TraceHeader
     [JsonPropertyName("timeline_start_effective_ms")] public double TimelineStartEffectiveMs { get; init; }
     [JsonPropertyName("synthetic")] public bool Synthetic { get; init; }
     [JsonPropertyName("diagnostic_perfect")] public bool DiagnosticPerfect { get; init; }
+    [JsonPropertyName("execution_mode")] public string ExecutionMode { get; init; } = "math-only";
+    [JsonPropertyName("execution_effective_mode")] public string ExecutionEffectiveMode { get; init; } = "";
+    [JsonPropertyName("execution_fallback")] public bool ExecutionFallback { get; init; }
+    [JsonPropertyName("execution_learned_segment_count")] public int ExecutionLearnedSegmentCount { get; init; }
+    [JsonPropertyName("execution_changed_sample_count")] public int ExecutionChangedSampleCount { get; init; }
     [JsonPropertyName("planner_version")] public string PlannerVersion { get; init; } = "";
     [JsonPropertyName("git_commit")] public string GitCommit { get; init; } = "";
     [JsonPropertyName("build_identity")] public string BuildIdentity { get; init; } = "";

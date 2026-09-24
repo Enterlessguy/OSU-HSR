@@ -1,0 +1,9 @@
+{
+  "human_verified": true,
+  "source": "REPLACE with official score URL or consented human replay provenance",
+  "skill_group": "beginner",
+  "skill_evidence": "REPLACE with dated skill evidence and reviewer rationale",
+  "split": "train",
+  "replay": "human/decoded/SCORE_ID.ndjson",
+  "map_plan": "human/maps/BEATMAP_ID.ndjson.gz"
+}

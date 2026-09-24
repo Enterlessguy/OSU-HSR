@@ -343,12 +343,14 @@ inspectcode
 FodyWeavers.xsd
 
 # Offline human-simulator research data and local toolchains.
+/output/
 /.dotnet/
 /.dotnet-cli-home/
 /.dotnet-home/
 /.nuget/
 /research/human-sim/.venv/
 /research/human-sim/data/
+/research/human-sim/supervision/
 /research/human-sim/models/*.joblib
 /research/human-sim/output/*
 !/research/human-sim/output/phase1-aim-benchmark.md

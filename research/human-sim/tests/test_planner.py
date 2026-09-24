@@ -494,17 +494,18 @@ def test_idle_wander_fills_long_gap_smoothly(tmp_path):
     roam_distances = [math.hypot(frame.x - 384.0, frame.y - 288.0) for frame in roam_window]
     assert np.median(roam_distances) > 75.0
 
-    # The wander envelope must converge onto the next target before the
-    # approach: just before the second press (trace-time ~8500, absolute
-    # ~9000) the cursor has to be near the second circle, otherwise a long
-    # doodle could cause a late-arrival miss.
+    # Approach from a distance instead of parking on the next circle early.
     late_window = [frame for frame in frames if 8350.0 <= frame.time_us / 1000.0 <= 8450.0]
     assert late_window
     target_x, target_y = 384.0, 288.0
     max_return_distance = max(
         math.hypot(frame.x - target_x, frame.y - target_y) for frame in late_window
     )
-    assert max_return_distance < 45.0
+    assert max_return_distance > 45.0
+    presses = [right for left, right in zip(frames, frames[1:])
+               if (right.k1 and not left.k1) or (right.k2 and not left.k2)]
+    assert len(presses) == 2
+    assert math.hypot(presses[1].x - target_x, presses[1].y - target_y) < 32.0
 
     write_trace(
         trace_path,

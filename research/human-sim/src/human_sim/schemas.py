@@ -169,6 +169,9 @@ class RunManifest:
     captured_replay_sha256: str | None
     profile_percentile: float
     seed: int
+    motion_mode: str = "profile"
+    execution_mode: str = "math-only"
+    execution_blend: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         return dict(self.__dict__)

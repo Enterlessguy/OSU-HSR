@@ -1,4 +1,4 @@
-# HSR Checkpoint 2 Final
+# HSR research fork (release preparation)
 
 HSR (Human Simulator Research) is an offline research fork of osu!lazer for
 generating and replaying deterministic, visibly synthetic osu!standard input
@@ -19,7 +19,7 @@ endorsed by, or supported by ppy Pty Ltd. The upstream project is
 
 ## Checkpoint status
 
-- Mathematical planner version: `timing-sync-v2.11`.
+- Mathematical planner version in this checkout: `timing-sync-v2.17-coherent-test`.
 - Skill and effort profiles from 0 to 100, plus a machine-perfect diagnostic
   baseline.
 - Shared timing/aim pressure, persistent bias and drift, context-conditioned
@@ -32,10 +32,19 @@ endorsed by, or supported by ppy Pty Ltd. The upstream project is
 - Hash-bound map/mod/clock-rate validation and deterministic trace caching.
 - 105-map library audit passing across 49,685 objects and more than 9 million
   generated frames.
-- Python planner suite: 15 tests passing at this checkpoint.
+- The historical checkpoint passed its Python planner suite; rerun current
+  tests on the exact release commit before publishing.
 
-The mathematical system is intentionally retained as the deterministic
-baseline and future safety envelope for a later learned movement model.
+The mathematical system is the deterministic baseline and safety envelope for
+experimental learned movement. A gated direct-residual checkpoint has delivered
+nonzero changes on 43 opened validation maps, and its adapter and runner wiring
+are now present in this checkout. Its draft OSI V2 circle component improved
+over math, but the full realism benchmark and sealed confirmation are
+unfinished. The active desktop shortcut still targets a separate build with an
+earlier guarded model. See
+[`research/human-sim/models/experimental/README.md`](research/human-sim/models/experimental/README.md)
+for the candidate and [`RELEASE_READINESS.md`](RELEASE_READINESS.md) for the
+publication blockers and release checks.
 
 ## Architecture
 
