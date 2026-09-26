@@ -21,6 +21,7 @@ depends=(
   'libxss'
   'libxkbcommon'
   'libpulse'
+  'wayland'
   'python>=3.12'
   'python-matplotlib'
   'python-numpy'

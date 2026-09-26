@@ -90,8 +90,12 @@ namespace osu.Desktop
             string cwd = Environment.CurrentDirectory;
 
             string gameName = base_game_name;
+            bool researchHostSmoke = args.Length == 1 && args[0] == "--verify-research-host";
+            if (researchHostSmoke && !osu.Game.Research.ResearchBuild.Enabled)
+                throw new InvalidOperationException("Native research smoke requires the isolated research build.");
             if (osu.Game.Research.ResearchBuild.Enabled)
                 gameName = "osu-development";
+            if (researchHostSmoke) gameName = $"hsr-host-smoke-{Guid.NewGuid():N}";
             bool tournamentClient = false;
 
             foreach (string arg in args)
@@ -121,7 +125,7 @@ namespace osu.Desktop
 
             var hostOptions = new HostOptions
             {
-                IPCPipeName = !tournamentClient
+                IPCPipeName = !tournamentClient && !researchHostSmoke
                     ? (osu.Game.Research.ResearchBuild.Enabled ? "osu-human-sim-research" : OsuGame.IPC_PIPE_NAME)
                     : null,
                 FriendlyGameName = OsuGameBase.GAME_NAME,
@@ -156,7 +160,13 @@ namespace osu.Desktop
                     }
                 }
 
-                if (tournamentClient)
+                if (researchHostSmoke)
+                {
+                    var smoke = new ResearchSmokeGame();
+                    host.Run(smoke);
+                    if (!smoke.Succeeded) throw new InvalidOperationException("Native research host exited before verification completed.");
+                }
+                else if (tournamentClient)
                     host.Run(new TournamentGame());
                 else
                 {

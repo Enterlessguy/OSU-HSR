@@ -24,6 +24,7 @@ pkgbase = intelligence-database-hsr
 	depends = libxss
 	depends = libxkbcommon
 	depends = libpulse
+	depends = wayland
 	depends = python>=3.12
 	depends = python-matplotlib
 	depends = python-numpy

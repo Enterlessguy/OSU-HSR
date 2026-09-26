@@ -52,7 +52,7 @@ jobs:
       - name: Install X11 smoke dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libx11-6 libxtst6 xdotool xvfb
+          sudo apt-get install --yes libx11-6 xvfb xauth openbox weston libwayland-client0 libegl1 libgl1-mesa-dri mesa-vulkan-drivers libvulkan1 libpulse0 libasound2t64
           for script in research/setup-research.sh research/build-research.sh research/run-dev-build.sh; do bash -n "$script"; done
       - name: Install Python requirements
         run: |
@@ -77,17 +77,20 @@ jobs:
           dotnet 'osu.Desktop/bin/Release/net8.0/osu!.dll' --verify-research-trace-input
           XDG_SESSION_TYPE=x11 dotnet research/HumanSim.Runner/bin/Release/net8.0/HumanSim.Runner.dll --verify-input-backend
           XDG_SESSION_TYPE=wayland WAYLAND_DISPLAY=wayland-0 dotnet research/HumanSim.Runner/bin/Release/net8.0/HumanSim.Runner.dll --verify-input-backend
+      - name: Start the native research client on X11 and Wayland
+        run: bash research/test-linux-desktop.sh "$GITHUB_WORKSPACE/osu.Desktop/bin/Release/net8.0/osu!.dll"
 
   arch-package:
     runs-on: ubuntu-latest
     container: archlinux:latest
     steps:
+      - name: Install Git before checkout
+        run: pacman -Syu --noconfirm --needed git
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - name: Install Arch build and runtime dependencies
         run: |
-          pacman -Syu --noconfirm
           pacman -S --needed --noconfirm base-devel dotnet-sdk-8.0 git namcap ffmpeg alsa-lib fontconfig freetype2 libglvnd libpng libx11 libxcursor libxi libxinerama libxrandr libxss libxkbcommon libpulse zlib python python-pytest python-matplotlib python-numpy python-pandas python-pillow python-pyarrow python-polars python-scikit-learn python-scipy python-pydantic python-joblib
           useradd --create-home builder
           mkdir -p /tmp/hsr-aur
@@ -106,6 +109,10 @@ jobs:
           runuser -u builder -- intelligence-database-hsr --diagnostics
           runuser -u builder -- hsr-map-exporter --help
           runuser -u builder -- hsr-replay-extractor --help
+      - name: Verify the installed desktop package on X11 and Wayland
+        run: |
+          pacman -S --needed --noconfirm xorg-server-xvfb xorg-xauth openbox weston mesa vulkan-swrast
+          runuser -u builder -- bash "$GITHUB_WORKSPACE/research/test-linux-desktop.sh" '/usr/lib/intelligence-database-hsr/osu.Desktop/bin/Release/net8.0/osu!.dll'
       - uses: actions/upload-artifact@v4
         with:
           name: intelligence-database-hsr-arch-x86_64
