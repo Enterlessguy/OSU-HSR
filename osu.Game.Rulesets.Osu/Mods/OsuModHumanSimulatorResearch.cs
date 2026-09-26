@@ -39,7 +39,7 @@ namespace osu.Game.Rulesets.Osu.Mods
         public override string Name => "Human Simulator Research";
         public override string Acronym => "HSR";
         public override ModType Type => ModType.Automation;
-        public override LocalisableString Description => "Local synthetic research run. Requires the guarded external runner and cannot submit scores.";
+        public override LocalisableString Description => "Intelligence Database synthetic research run. Requires the guarded external runner and cannot submit scores.";
         public override bool ValidForMultiplayer => false;
         public override bool ValidForMultiplayerAsFreeMod => false;
 
@@ -78,7 +78,7 @@ namespace osu.Game.Rulesets.Osu.Mods
         {
             overlay.TopLeftElements.Add(new OsuSpriteText
             {
-                Text = "SYNTHETIC RESEARCH RUN",
+                Text = "Intelligence Database | SYNTHETIC RESEARCH RUN",
                 Font = OsuFont.GetFont(size: 18, weight: FontWeight.Bold),
                 Colour = Color4.OrangeRed,
             });

@@ -250,12 +250,13 @@ try {
     $env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
 
     $dotnet = Join-Path $root ".dotnet\dotnet.exe"
+    if (-not (Test-Path -LiteralPath $dotnet)) { $dotnet = (Get-Command dotnet -ErrorAction Stop).Source }
     $python = Join-Path $root "research\human-sim\.venv\Scripts\python.exe"
     $humanSim = Join-Path $root "research\human-sim\.venv\Scripts\human-sim.exe"
     $client = Join-Path $root "osu.Desktop\bin\Debug\net8.0\osu!.exe"
     $runnerProject = Join-Path $root "research\HumanSim.Runner\HumanSim.Runner.csproj"
     $runnerDll = Join-Path $root "research\HumanSim.Runner\bin\Debug\net8.0-windows\HumanSim.Runner.dll"
-    $coherentModel = Join-Path $root "research\human-sim\models\experimental\seed101-math-residual-g100.json"
+    $coherentModel = Join-Path $root "research\human-sim\models\experimental\seed101-math-residual-g100-v4.json"
     foreach ($required in @($dotnet, $python, $humanSim)) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
             throw "Required local tool is missing: $required"
@@ -281,7 +282,7 @@ try {
 
     Write-Host "=== [3/5] Updating editable Python package ===" -ForegroundColor Cyan
     Push-Location (Join-Path $root "research\human-sim")
-    try { Invoke-NativeChecked $python @("-m", "pip", "install", "-e", ".[test]") }
+    try { Invoke-NativeChecked $python @("-m", "pip", "install", "--no-deps", "--no-build-isolation", "-e", ".[test]") }
     finally { Pop-Location }
 
     Write-Host "=== [4/5] Verifying runtime identity ===" -ForegroundColor Cyan
@@ -307,7 +308,7 @@ try {
             throw "Experimental coherent model is missing: $coherentModel"
         }
         $modelHash = (Get-FileHash -LiteralPath $coherentModel -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($modelHash -ne "e1cd5bcd7ca40d8f060277c9a0ee176fbf625bcc0401c66716044a61891a7074") {
+        if ($modelHash -ne "3ba4d157124fa078b862062a38578561265bf03aaa2180a566440874b22bc7a2") {
             throw "Experimental coherent model hash mismatch: $modelHash"
         }
         Write-Host "Experimental gated hybrid: opened-validation circle component only; full OSI V2 unconfirmed." -ForegroundColor Yellow

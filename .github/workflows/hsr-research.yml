@@ -1,0 +1,36 @@
+name: HSR research checks
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  research:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install audited Python versions
+        run: |
+          python -m pip install --upgrade 'pip>=26.2' setuptools
+          python -m pip install -r research/human-sim/requirements-release.txt
+          python -m pip install --no-deps --no-build-isolation -e research/human-sim
+      - name: Tests and public-source scan
+        run: |
+          python -m pytest research/human-sim/tests -q
+          python research/human-sim/scripts/check_open_source_release.py --strict --history
+      - name: Build isolated research client and runner
+        run: |
+          dotnet build osu.Desktop/osu.Desktop.csproj -c Release -p:HumanSimResearchBuild=true
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          dotnet build research/HumanSim.Runner/HumanSim.Runner.csproj -c Release
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $boundary = dotnet 'osu.Desktop/bin/Release/net8.0/osu!.dll' --print-research-boundary
+          if ($boundary -ne 'research=True;login=False;submission=False') { throw 'Research boundary disabled' }
+          dotnet 'osu.Desktop/bin/Release/net8.0/osu!.dll' --verify-research-mapping-depth
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }

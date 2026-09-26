@@ -22,6 +22,15 @@ namespace osu.Game.Database
 {
     public static class RealmObjectExtensions
     {
+        public static int VerifyResearchMappingDepth()
+        {
+            var maps = new[] { write_mapper, mapper, beatmap_set_mapper }
+                       .SelectMany(m => m.ConfigurationProvider.Internal().GetAllTypeMaps()).ToArray();
+            if (maps.Length == 0 || maps.Any(m => m.MaxDepth <= 0 || m.MaxDepth > 32))
+                throw new InvalidOperationException("Research Realm mapping recursion is not bounded.");
+            return maps.Length;
+        }
+
         private static readonly IMapper write_mapper = new MapperConfiguration(c =>
         {
             c.ShouldMapField = _ => false;
@@ -89,8 +98,11 @@ namespace osu.Game.Database
                  }
              });
 
-            c.Internal().ForAllMaps((_, expression) =>
+            c.Internal().ForAllMaps((map, expression) =>
             {
+                // Bound graph recursion (GHSA-rvv3-g6hj-g44x); retain tighter per-map limits.
+                if (map.MaxDepth == 0)
+                    expression.MaxDepth(32);
                 expression.ForAllMembers(m =>
                 {
                     if (m.DestinationMember.Has<IgnoredAttribute>() || m.DestinationMember.Has<BacklinkAttribute>() || m.DestinationMember.Has<IgnoreDataMemberAttribute>())
@@ -161,8 +173,10 @@ namespace osu.Game.Database
             // Takes a bit of effort to determine whether this is the case though, see https://stackoverflow.com/questions/951536/how-do-i-tell-whether-a-type-implements-ilist
             c.ShouldMapProperty = pi => pi.GetMethod?.IsPublic == true;
 
-            c.Internal().ForAllMaps((_, expression) =>
+            c.Internal().ForAllMaps((map, expression) =>
             {
+                if (map.MaxDepth == 0)
+                    expression.MaxDepth(32);
                 expression.ForAllMembers(m =>
                 {
                     if (m.DestinationMember.Has<IgnoredAttribute>() || m.DestinationMember.Has<BacklinkAttribute>() || m.DestinationMember.Has<IgnoreDataMemberAttribute>())

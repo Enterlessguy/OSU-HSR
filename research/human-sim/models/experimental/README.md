@@ -1,35 +1,64 @@
-# Experimental direct residual model
+# Intelligence Database HSR residual model card
 
-`seed101-math-residual-g100.json` is a research checkpoint. It is not the
-desktop default and is not evidence of human indistinguishability.
+The release default is `seed101-math-residual-g100-v4.json`.
+Older JSON files are historical checkpoints. This is an offline research model.
 
 | Field | Value |
 |---|---|
-| Model file SHA-256 | `e1cd5bcd7ca40d8f060277c9a0ee176fbf625bcc0401c66716044a61891a7074` |
-| Canonical model SHA-256 | `302e4fe996664366f498ac74301cd294ee39b4736dfb812e4851281183c4fce1` |
-| Fit | 198 contexts from 100 independent TRAIN map/player components |
-| Target | Task curve plus observed human minus generated math at matched times |
-| Runtime | Experimental math plus learned residual adapter, not the desktop loader |
+| File SHA-256 | `3ba4d157124fa078b862062a38578561265bf03aaa2180a566440874b22bc7a2` |
+| Canonical SHA-256 | `7b87af291bca415c1f053ca515659c091ce9f2c1b280283fc129211a79ce0d87` |
+| Fit | 198 contexts, 100 independent TRAIN map/player components, seed 101 |
+| Architecture | 22 context features, 45 curve coefficients, ridge fit in integrated curve space |
+| Target | task baseline + human minus math at matched timestamps |
+| Composition | math path + feasible learned residual; lateral gain 1.5 |
+| Runtime | `math-residual-lateral-gated-runtime-v1` |
+| Runtime source SHA-256 | `5f69c10fd2be615b93cff847a4343a85ca8ab753d6fd2ddd32230b4818bf5d87` |
+| Frozen fit specification | `d4ba7daae084093a2154c9b7aa6e18a5a2eb2936ab5cce3ddfee52be4c86e5d2` |
 
-The public source was the [o!rdr replay dump](https://www.kaggle.com/datasets/skihikingkevin/ordr-replay-dump/data),
-version 155, listed as CC0 by its publisher. The model does not contain raw
-replays or beatmaps. Public score metadata corroborates source identity but
-does not prove that each trace was manually played. The replay archive and
-decoded player movement are intentionally excluded from this repository.
+## Movement and limitations
 
-On 43 opened validation maps, the experimental runtime delivered learned
-movement on all maps: 5,182 accepted segments, 88 fallbacks, and 1,016,461
-changed coordinate samples. A **draft circle-only** OSI V2 component scored
-63.729 for the hybrid versus 62.768 for pure math on 38 supported maps;
-paired gain +0.961, bootstrap 95% interval [+0.422, +1.725]. Five map circle
-cells were unsupported. Slider, spinner and break coordinate samples were
-unchanged, and a contact audit found no math-legal circle made illegal by the
-hybrid. These are development results because the benchmark and model were
-inspected on opened validation data.
+Learned shape depends on route geometry, timing, incoming motion and dwell.
+The residual preserves contact positions and zero outer position/velocity/
+acceleration deltas, producing continuous joins. The controller admits only
+positive strength satisfying continuous residual and sampled relative gates.
+Those gates bound added motion; they do not guarantee an already imperfect
+math baseline becomes globally legal. Every rejected window is reported.
+Maps with no delivered learned movement fail the coherent planning route.
 
-Full OSI V2 is unfinished: temporal diversity, calibrated mode and native
-flicker gates, bandwidth sensitivity, critical-cell margins, sealed
-confirmation, and blinded player-view corroboration remain. The desktop
-runtime still uses the earlier guarded model. Do not configure this file as
-the default or advertise a superior full realism score until those gates pass
-and the actual desktop compiler dispatch is verified.
+The learned adapter covers eligible four-circle windows. It leaves slider,
+spinner and break movement to the mathematical planner. It is not a large
+neural network, generalized player model or proof of human realism. Low
+session-diversity scores remain a documented limitation.
+
+## Data, release and reproduction
+
+The [o!rdr replay archive](https://www.kaggle.com/datasets/skihikingkevin/ordr-replay-dump/data),
+version 155, is listed as CC0 by its publisher. Public score identity checks
+exclude mismatched/known automated records but cannot certify manual input.
+133 admitted TRAIN inputs were staged; bounded fitting selected 198 contexts
+from 100 independent components. Raw replays, player IDs, beatmaps and decoded
+movement are excluded. Code and derived JSON model are released under the root
+MIT license, retaining upstream attribution.
+
+`coherent_training.py` contains the public numerical fitting/admission core.
+After independently acquiring and reviewing the expected development inputs,
+`train_ordr_mixed_coherent.py --prepare-only` stages TRAIN and
+`train_ordr_math_residual.py --output <new-directory>` performs the fit.
+Source hashes are embedded in the frozen fit spec. Exact historical fitting
+requires the same private input/admission records, which are not distributed.
+The released JSON is directly hash-verifiable and needs no training downloads
+for normal research use.
+
+## Opened validation evidence
+
+All 43 maps delivered learned movement: 5,124 accepted windows, 146 fallbacks,
+1,006,801 changed samples. The local V2 circle component supports 38 maps:
+math 62.768, hybrid 63.887; paired gain +1.119, bootstrap 95% interval
+[+0.517, +1.959]. No math-legal circle became illegal among 27,387 contacts.
+Other mode coordinates were unchanged. Temporal improvement is inconclusive.
+These are opened development results; the scorer was inspected during model
+selection. No full V2 aggregate, independent confirmation, perceptual review,
+anti-cheat-evasion or player-indistinguishability claim is made.
+
+See the [aggregate benchmark snapshot](../../benchmarks/LOCAL_V2_20260926.json)
+and [release notes](../../../RELEASE_NOTES.md).

@@ -391,6 +391,7 @@ def apply_coherent_trajectory_model(
         checked = 0
         analytic = None
         sampled = None
+        full_envelope = _continuous_envelope(delta_coefficients, context["nodes"])
         for alpha_value in CONTROLLER_GRID:
             alpha = float(alpha_value * blend)
             # Research variant: preserve the actual planner path and apply only
@@ -398,7 +399,9 @@ def apply_coherent_trajectory_model(
             # planner path with the fitted task curve.
             candidate = base_points + alpha * delta_points
             checked += 1
-            analytic = _continuous_envelope(alpha * delta_coefficients, context["nodes"])
+            # Every derivative norm of alpha * delta scales by |alpha|.
+            # Find polynomial extrema once; scaling cannot move their roots.
+            analytic = _scaled_envelope(full_envelope, alpha)
             sampled = exact_kinematic_summary(candidate, local_times, constraints)
             sampled["relative_failure_families"] = [
                 metric for metric, limit in sampled["limits"].items()
@@ -522,5 +525,16 @@ def _continuous_envelope(coefficients: np.ndarray, nodes: np.ndarray) -> dict[st
         result[metric] = max(candidates, default=0.0)
         result[f"{metric}_ratio"] = result[metric] / limits[metric]
     result["failure_families"] = [metric for metric, limit in limits.items() if result[metric] > limit + 1e-6]
+    result["valid"] = not result["failure_families"]
+    return result
+
+
+def _scaled_envelope(full: dict[str, Any], alpha: float) -> dict[str, Any]:
+    limits = {"speed_px_s": 12_000.0, "acceleration_px_s2": 120_000.0, "jerk_px_s3": 2_500_000.0}
+    result = {}
+    for metric, limit in limits.items():
+        result[metric] = abs(alpha) * full[metric]
+        result[f"{metric}_ratio"] = result[metric] / limit
+    result["failure_families"] = [m for m, limit in limits.items() if result[m] > limit + 1e-6]
     result["valid"] = not result["failure_families"]
     return result

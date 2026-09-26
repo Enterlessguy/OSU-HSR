@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 from pathlib import Path
 import subprocess
 
@@ -521,9 +522,14 @@ def _runner_environment() -> dict[str, str]:
 def _run(args: argparse.Namespace) -> int:
     root = Path(__file__).resolve().parents[4]
     dotnet = root / ".dotnet" / "dotnet.exe"
+    if not dotnet.exists():
+        system_dotnet = shutil.which("dotnet")
+        if system_dotnet is None:
+            raise RuntimeError("Install a supported .NET 8 SDK before running a trace")
+        dotnet = Path(system_dotnet)
     runner = root / "research" / "HumanSim.Runner" / "bin" / "Debug" / "net8.0-windows" / "HumanSim.Runner.dll"
-    if not dotnet.exists() or not runner.exists():
-        raise RuntimeError("Build HumanSim.Runner and install the workspace-local .NET SDK before running a trace")
+    if not dotnet.is_file() or not runner.exists():
+        raise RuntimeError("Build HumanSim.Runner and install a supported .NET 8 SDK before running a trace")
     completed = subprocess.run(
         [
             str(dotnet),
@@ -626,7 +632,7 @@ def _resolve_auto_execution(
         raise ValueError("coherent execution requires a positive blend; use math-only for the control arm")
     model = execution_model or str(
         root / "research" / "human-sim"
-        / ("models/experimental/seed101-math-residual-g100.json" if mode == "coherent"
+        / ("models/experimental/seed101-math-residual-g100-v4.json" if mode == "coherent"
            else "output/training/path-execution-ai-v2-final3/model.json")
     )
     if blend > 0.0 and not Path(model).is_file():

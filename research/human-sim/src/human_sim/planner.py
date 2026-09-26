@@ -198,8 +198,8 @@ def _quintic_hermite(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Evaluate a quintic Hermite segment and its physical derivatives.
 
-    ``v`` and ``a`` use px/s and px/s²; ``u`` is the normalised segment time.
-    The endpoint equations are the C² boundary conditions used by the rolling
+    ``v`` and ``a`` use px/s and px/sÂ²; ``u`` is the normalised segment time.
+    The endpoint equations are the CÂ² boundary conditions used by the rolling
     waypoint planner.  Returning derivatives here keeps the solver and its
     continuity tests on the same implementation.
     """
@@ -1389,7 +1389,7 @@ class HumanTracePlanner:
         object_index: int,
         radius: float,
     ) -> None:
-        """Append one locally planned C² segment for an ordinary circle."""
+        """Append one locally planned CÂ² segment for an ordinary circle."""
         self._continuous_endpoint_emitted = False
         state = self.motion_state
         start = np.asarray(start, dtype=float).copy()
@@ -1582,7 +1582,7 @@ class HumanTracePlanner:
         ):
             control_fraction = float(np.clip(tau, 0.0, 1.0))
             # A triggered control input, unlike the removed per-segment random
-            # Gaussian bump.  It is zero at both knots, so it cannot break C²
+            # Gaussian bump.  It is zero at both knots, so it cannot break CÂ²
             # sharing or become a decorative correction on every move.
             control_shape = control_fraction**3 * (1.0 - control_fraction) ** 2
             control_displacement = state.correction * (actual_duration / 1000.0) ** 2 * control_shape * 0.35

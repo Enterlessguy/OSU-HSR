@@ -21,10 +21,9 @@ import argparse
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "output/external-ordr-v155"
-WORKTREE = Path(os.environ.get("HSR_RESEARCH_ROOT", str(ROOT))).resolve()
 SOURCE = OUT / "mixed-coherent-train-v1/source"
-DEST = OUT / "math-residual-train-v3"
-sys.path.insert(0, str(WORKTREE))
+DEST = OUT / "math-residual-train-v4"
+sys.path.insert(0, str(ROOT / "src"))
 from human_sim import coherent_training as grouped
 from human_sim.execution import canonical_sha256
 from human_sim.coherent_execution import load_coherent_model  # noqa: E402
@@ -42,7 +41,7 @@ def jsonable(value):
 
 def atomic(path, value):
     temporary=path.with_suffix(path.suffix+".tmp")
-    temporary.write_text(json.dumps(jsonable(value),indent=2,allow_nan=False)+"\n",encoding="utf-8")
+    temporary.write_bytes((json.dumps(jsonable(value),indent=2,allow_nan=False)+"\n").encode("utf-8"))
     temporary.replace(path)
 
 
@@ -81,7 +80,7 @@ def main() -> None:
     selected = [row for key in selected_ids for row in groups[key]]
     profile = HumanProfile(99.5, 42, 500, perfect_baseline=False, skill_level=99.5, effort_level=100.0)
     spec = {
-        "schema_version": "ordr-math-residual-fit-freeze-v3",
+        "schema_version": "ordr-math-residual-fit-freeze-v4",
         "selection": "same first 100 SHA256-ordered new TRAIN components as mixed fit",
         "component_ids": selected_ids, "contexts": len(selected), "seed": 101, "group_size": 100,
         "math_profile": {"skill": 99.5, "effort": 100.0, "seed": 42, "timing_level": 500, "perfect_baseline": False},
@@ -145,7 +144,7 @@ def main() -> None:
     if verified_hash != bundle["sha256"]:
         raise ValueError("Runtime loader returned another model hash")
     report = {
-        "schema_version": "ordr-math-residual-fit-v3",
+        "schema_version": "ordr-math-residual-fit-v4",
         "contexts": len(transformed), "groups": len(selected_ids), "maps": len(math_cache),
         "fit_wall_s": fit_wall, "fit_rows": len(fit_rows),
         "training_residual_rms_median_px": float(np.median(residual_rms)),

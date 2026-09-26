@@ -32,6 +32,8 @@ import urllib.parse
 import urllib.request
 import zlib
 
+from .network import open_https
+
 
 ZIP_LOCAL = 0x04034B50
 ZIP_CENTRAL = 0x02014B50
@@ -88,7 +90,7 @@ def fetch_range(url: str, start: int, end: int, *, max_bytes: int) -> bytes:
     if expected > max_bytes:
         raise ValueError(f"requested range {expected} exceeds max_bytes={max_bytes}")
     request = urllib.request.Request(url, headers={"Range": f"bytes={start}-{end}"})
-    with urllib.request.urlopen(request, timeout=90) as response:
+    with open_https(request, timeout=90) as response:
         status = int(getattr(response, "status", response.getcode()))
         if status != 206:
             raise IOError(f"expected HTTP 206 for bytes={start}-{end}, got {status}")
@@ -107,7 +109,7 @@ def _archive_size(url: str) -> int:
     if probe != b"" and len(probe) != 1:
         raise IOError("archive probe failed")
     request = urllib.request.Request(url, headers={"Range": "bytes=0-0"})
-    with urllib.request.urlopen(request, timeout=90) as response:
+    with open_https(request, timeout=90) as response:
         content_range = str(response.headers.get("Content-Range", ""))
     try:
         total = int(content_range.rsplit("/", 1)[1])
@@ -477,8 +479,11 @@ def fetch_public_score_evidence(score_id: int | str) -> dict[str, Any]:
     """Fetch one public score page; API credentials are not used."""
     url = f"https://osu.ppy.sh/scores/osu/{urllib.parse.quote(str(score_id), safe='')}"
     request = urllib.request.Request(url, headers={"User-Agent": "human-sim-research/1.0"})
-    with urllib.request.urlopen(request, timeout=45) as response:
-        page = response.read().decode("utf-8", errors="replace")
+    with open_https(request, timeout=45) as response:
+        payload = response.read(4 * 1024 * 1024 + 1)
+        if len(payload) > 4 * 1024 * 1024:
+            raise ValueError("score evidence exceeds 4 MiB")
+        page = payload.decode("utf-8", errors="replace")
     return parse_public_score_page(page, score_id)
 
 

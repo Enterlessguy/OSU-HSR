@@ -111,7 +111,7 @@ def test_default_auto_run_resolves_pinned_gated_model():
     assert mode == "coherent" and blend == 1.0
     assert model_path is not None
     assert load_coherent_model(model_path).canonical_sha256 == (
-        "302e4fe996664366f498ac74301cd294ee39b4736dfb812e4851281183c4fce1"
+        "7b87af291bca415c1f053ca515659c091ce9f2c1b280283fc129211a79ce0d87"
     )
     with pytest.raises(ValueError, match="positive blend"):
         _resolve_auto_execution(root, "coherent", model_path, 0.0)

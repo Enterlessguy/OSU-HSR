@@ -116,3 +116,18 @@ matched-cadence flicker gates, independent perceptual review and the sealed
 confirmation cohort remain outstanding. The older exploratory circle distance
 ranks the models differently, so retain raw feature and map-level reports and
 do not select a winner from one partial metric.
+
+## 2026-09-26 local-release scope
+
+The owner requested completion using local component evidence, without
+reviewers or human-indistinguishability claims. This changes release scope,
+not the original full-realism success definition above. Confirmation remains
+sealed. The v4 model reproduces the tuned opened-validation circle result,
+with all 43 paired maps and every fallback included. Slider/spinner/break
+and temporal components now have calibration/control-derived development
+reports; temporal improvement is inconclusive and its absolute score is low.
+A full aggregate and calibrated flicker-equivalence claim remain unavailable.
+
+The source-only research preview may be released with these limitations.
+See `benchmarks/LOCAL_V2_20260926.json` for the aggregate evidence and hashes.
+Do not relabel this preview as a full OSI V2 victory.

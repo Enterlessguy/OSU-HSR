@@ -45,7 +45,8 @@ def main() -> None:
     for name, size in SPLITS.items():
         partitions[name] = selected[cursor:cursor + size]
         cursor += size
-    assert len(players) == len(families) == len(replays) == len(selected)
+    if not len(players) == len(families) == len(replays) == len(selected):
+        raise ValueError("Split components are not player/map/replay disjoint")
     report = {
         "schema_version": "ordr-split-proposal-v1",
         "status": "provisional_metadata_only",

@@ -40,7 +40,8 @@ def history_findings() -> tuple[int, list[tuple[Path, str]]]:
         ["git", "-C", str(ROOT), "cat-file", "--batch-all-objects", "--batch"],
         stdout=subprocess.PIPE,
     )
-    assert process.stdout is not None
+    if process.stdout is None:
+        raise RuntimeError("Git history pipe unavailable")
     findings: list[tuple[Path, str]] = []
     blobs = 0
     while header := process.stdout.readline():

@@ -36,7 +36,9 @@ HSR reads sensitive values only from environment variables:
 
 Never place their values in source files, command examples, manifests, logs,
 fixtures, or generated datasets. Local `.env` files, private keys, replay
-exports, corpora, logs, and trained models must remain untracked.
+exports, corpora, logs, and unreviewed model artifacts must remain untracked.
+The audited small JSON research checkpoint is intentionally published with its
+model card and aggregate development evidence.
 
 ## Research data
 

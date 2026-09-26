@@ -16,6 +16,8 @@ $buildArguments = @("build", $clientProject, "--configuration", $Configuration,
 if (Test-Path -LiteralPath (Join-Path $root "osu.Desktop\obj\project.assets.json") -PathType Leaf) {
     $buildArguments += "--no-restore"
 }
-& (Join-Path $root ".dotnet\dotnet.exe") @buildArguments
+$dotnet = Join-Path $root ".dotnet\dotnet.exe"
+if (-not (Test-Path -LiteralPath $dotnet)) { $dotnet = (Get-Command dotnet -ErrorAction Stop).Source }
+& $dotnet @buildArguments
 
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

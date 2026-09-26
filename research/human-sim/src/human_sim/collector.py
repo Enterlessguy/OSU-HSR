@@ -5,7 +5,9 @@ import os
 from pathlib import Path
 import time
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+from .network import open_https
 
 
 API_ROOT = "https://osu.ppy.sh/api/v2"
@@ -20,7 +22,7 @@ def _oauth_token() -> str:
         {"client_id": int(client_id), "client_secret": client_secret, "grant_type": "client_credentials", "scope": "public"}
     ).encode()
     request = Request("https://osu.ppy.sh/oauth/token", data=payload, headers={"Content-Type": "application/json"})
-    with urlopen(request, timeout=30) as response:
+    with open_https(request, timeout=30) as response:
         return str(json.load(response)["access_token"])
 
 
@@ -39,7 +41,7 @@ def collect_replays(score_ids_file: str | Path, output_dir: str | Path, delay_se
             continue
         request = Request(f"{API_ROOT}/scores/{score_id}/download", headers={"Authorization": f"Bearer {token}"})
         try:
-            with urlopen(request, timeout=45) as response:
+            with open_https(request, timeout=45) as response:
                 payload = response.read(16 * 1024 * 1024 + 1)
                 if len(payload) > 16 * 1024 * 1024:
                     raise ValueError("replay exceeds the 16 MiB acquisition limit")

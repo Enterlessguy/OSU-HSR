@@ -1,0 +1,128 @@
+{
+  "schema_version": "intelligence-database-hsr-local-v2-release-v1",
+  "status": "opened-validation component evidence; no full aggregate or human-indistinguishability claim",
+  "confirmation_access": false,
+  "independent_review": "not performed; excluded from requested release scope",
+  "model_file_sha256": "3ba4d157124fa078b862062a38578561265bf03aaa2180a566440874b22bc7a2",
+  "model_canonical_sha256": "7b87af291bca415c1f053ca515659c091ce9f2c1b280283fc129211a79ce0d87",
+  "adapter_source_sha256": "5f69c10fd2be615b93cff847a4343a85ca8ab753d6fd2ddd32230b4818bf5d87",
+  "circle": {
+    "expected_maps": 43,
+    "scored_circle_maps": 38,
+    "attempted_windows": 4075,
+    "common_supported_windows": 2814,
+    "math_mean_supported_map_score": 62.768362442477624,
+    "hybrid_mean_supported_map_score": 63.886986045529426,
+    "hybrid_minus_math_mean_supported_map_score": 1.1186236030518055,
+    "hybrid_minus_math_bootstrap_95": [
+      0.5169806049487595,
+      1.9594702823894994
+    ],
+    "full_osi_v2_score_available": false
+  },
+  "delivery": {
+    "cases": 43,
+    "maps_with_learned_exposure": 43,
+    "learned_segments": 5124,
+    "fallback_segments": 146,
+    "changed_samples": 1006801
+  },
+  "extended_components": {
+    "slider": {
+      "supported_maps": 43,
+      "unsupported_maps": 0,
+      "math": 23.457823664928004,
+      "hybrid": 23.457823664928004,
+      "paired_delta": 0.0,
+      "paired_95": [
+        0.0,
+        0.0
+      ]
+    },
+    "spinner": {
+      "supported_maps": 24,
+      "unsupported_maps": 19,
+      "math": 70.24148079968542,
+      "hybrid": 70.24148079968542,
+      "paired_delta": 0.0,
+      "paired_95": [
+        0.0,
+        0.0
+      ]
+    },
+    "break_free_roam": {
+      "supported_maps": 31,
+      "unsupported_maps": 12,
+      "math": 68.39638007801713,
+      "hybrid": 68.39638007994293,
+      "paired_delta": 1.925795207889971e-09,
+      "paired_95": [
+        -4.053067558992728e-09,
+        9.080919167879799e-09
+      ]
+    },
+    "temporal": {
+      "supported_maps": 36,
+      "unsupported_maps": 7,
+      "math": 4.376413380784793,
+      "hybrid": 4.655541395595003,
+      "paired_delta": 0.27912801481020993,
+      "paired_95": [
+        -3.213654977505415,
+        3.104010543861314
+      ]
+    }
+  },
+  "contacts": {
+    "maps": 43,
+    "circles": 27387,
+    "math_legal_hybrid_illegal": 0
+  },
+  "unsupported_modes": {
+    "slider_windows": 14409,
+    "slider_samples": 1400668,
+    "slider_changed_samples": 0,
+    "break_windows": 126,
+    "break_samples": 215820,
+    "break_changed_samples": 0,
+    "spinner_windows": 62,
+    "spinner_samples": 70955,
+    "spinner_changed_samples": 0
+  },
+  "learned_contribution": {
+    "accepted_windows": 5124,
+    "learned_to_replacement_ratio_median_map": 1.0,
+    "learned_to_replacement_ratio_p10_map": 0.9999999999999999
+  },
+  "flicker": {
+    "status": "descriptive_unscored_no_validation_tuned_thresholds",
+    "matched_windows": 4075,
+    "cohort_mean_map_median": {
+      "human": {
+        "normalized_speed_p99": 2.016056731435095,
+        "normalized_max_step": 0.20793254115088564,
+        "direction_reversal_fraction": 0.0017889087656529517
+      },
+      "math": {
+        "normalized_speed_p99": 1.585209572404974,
+        "normalized_max_step": 0.18800602999403623,
+        "direction_reversal_fraction": 0.0
+      },
+      "hybrid": {
+        "normalized_speed_p99": 1.5807742921286614,
+        "normalized_max_step": 0.18767549345035214,
+        "direction_reversal_fraction": 0.0
+      }
+    }
+  },
+  "private_report_sha256": {
+    "report.json": "aac9a606e0303fc87138f86fca3f219c05b57d8fcef92d41b452c99fa2a5cd80",
+    "osi-v2-circle-component.json": "0e8ff17a36ac25ce41cc15a7b6a3ce074cda434dc6270240312ab6f0eaaece19",
+    "osi-v2-extended-audit.json": "3c4c7fb229147b222ff6fea7bd5b2fa34015c20234f836585bb2e9ad22f5430f",
+    "circle-contact-audit.json": "5f6999d634535e20b148643a5b892c2ac6964f31af3cd0bf9f032822762bb4be",
+    "mode-boundary-audit.json": "462b15c1406fa3bfa97df7b1148c81c6037c9e415f54aeb870059bac384992e9",
+    "learned-contribution-audit.json": "c5d8cde71240fbcc8d112ecf723539b37e84664345a9ba2c5c7c765c5150f504",
+    "matched-cadence-flicker-audit.json": "0f62e49b8aa68f2dc47b494749f820b67a38baf6850d7f75ab6b1c3d0e8b5fb0"
+  },
+  "paired_trace_hash_collection_sha256": "54ec58e287305f76ab26c3db3bc9a12ebc4e0ba652763998b60bea4b3e17ac7e"
+}

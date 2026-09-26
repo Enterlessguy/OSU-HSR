@@ -21,7 +21,7 @@
     </None>
   </ItemGroup>
   <ItemGroup Label="Package References">
-    <!-- Held back due to licencing change stupidness. Silenced vulnerability does not affect us. -->
+    <!-- Retain the MIT release. All Realm maps explicitly bound recursion; see research/RELEASE_AUDIT.md. -->
     <PackageReference Include="AutoMapper" Version="13.0.1">
       <NoWarn>NU1903</NoWarn>
     </PackageReference>
@@ -55,5 +55,8 @@
     <PackageReference Include="System.IO.FileSystem.Primitives" Version="4.3.0" />
     <PackageReference Include="System.Runtime.InteropServices" Version="4.3.0" />
     <PackageReference Include="System.Runtime.Handles" Version="4.3.0" />
+    <!-- Patch legacy transitive references, even when net8 uses framework assemblies. -->
+    <PackageReference Include="System.Net.Http" Version="4.3.4" />
+    <PackageReference Include="System.Text.RegularExpressions" Version="4.3.1" />
   </ItemGroup>
 </Project>

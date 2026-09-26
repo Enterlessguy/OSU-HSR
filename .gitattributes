@@ -25,3 +25,5 @@ App.config text eol=crlf
 .travis.yml text eol=lf
 *.py text eol=lf
 research/human-sim/models/**/*.json text eol=lf
+
+research/human-sim/benchmarks/*.json text eol=lf

@@ -38,6 +38,11 @@ namespace osu.Desktop
                 Console.WriteLine($"research={osu.Game.Research.ResearchBuild.Enabled};login={osu.Game.Research.ResearchBuild.AllowsLogin};submission={osu.Game.Research.ResearchBuild.AllowsScoreSubmission(Array.Empty<osu.Game.Rulesets.Mods.Mod>())}");
                 return;
             }
+            if (osu.Game.Research.ResearchBuild.Enabled && args.Length == 1 && args[0] == "--verify-research-mapping-depth")
+            {
+                Console.WriteLine($"bounded_realm_maps={osu.Game.Database.RealmObjectExtensions.VerifyResearchMappingDepth()};max_depth=32");
+                return;
+            }
             // IMPORTANT DON'T IGNORE: For general sanity, velopack's setup needs to run before anything else.
             // This has bitten us in the rear before (bricked updater), and although the underlying issue from
             // last time has been fixed, let's not tempt fate.
