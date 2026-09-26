@@ -102,3 +102,38 @@ tracked/unignored files with zero recognized findings before final packaging
 commit. Raw data and local logs remain excluded. Final public-pin CI, package
 inventory/hash review and a physical Linux desktop gameplay check are distinct
 release evidence levels. No AUR credentials or AUR publication are included.
+
+### Public-pin package and compiler evidence
+
+[Run 36280322335](https://github.com/Enterlessguy/OSU-HSR/actions/runs/36280322335)
+passed the actual public source pin `d08bad9`, including install, focused native
+X11/Wayland startup and uninstall. Its downloaded 163,285,274-byte package has
+SHA-256 `a34feb161cb92ac00a6a6f983c1ff0f2cab6f759b45dc24ca1ebeb178e3440fd`.
+The 1,362-entry inventory contains no raw maps/replays/traces, private supervision,
+environments or caches. The installed model digest matches the reviewed checkpoint.
+BASS FX and FFmpeg archives inside the package match their recipe checksums.
+Relative runtime symlinks preserve tool-local paths without duplicating binaries.
+
+[Run 36280532846](https://github.com/Enterlessguy/OSU-HSR/actions/runs/36280532846)
+adds the installed compiler integration gate: the compiled runner invokes the
+installed exporter and Python planner, loads the reviewed model and validates
+41,317 frames, 26 learned segments, 39,078 changed samples and zero fallbacks.
+The fixture is an 80-circle synthetic map generated in temporary storage; it
+contains no human replay or validation cohort. No input is dispatched by this
+planning diagnostic. This is model-wiring evidence, not a realism score.
+
+The current recipe pins `632f100ae008b29eb00d8498ff3042e1cfe58a25`, which corrects
+platform help and preserves the Windows log default. Its final public-pin
+[CI run 36280792929](https://github.com/Enterlessguy/OSU-HSR/actions/runs/36280792929)
+passed all three jobs, including installed learned planning, focused native
+X11/Wayland startup and removal. Its artifact supersedes the earlier package. The source
+scan at metadata commit `932ef67` reports 6,483 Git blobs, 5,798 files and zero
+recognized findings. The AUR RPC reported the package name unregistered on
+2026-09-27; availability must be checked again at upload time.
+
+Final package from run `36280792929`:
+`intelligence-database-hsr-0.1.2-1-x86_64.pkg.tar.zst`, SHA-256
+`a14ea8ae6882dbd3d6e0b7cf1b33c2a6a05d286e1e516c14b57ac6d357220b72`.
+The downloaded hash matches CI's checksum file. Inventory and installed model
+digest checks passed again. This is the candidate artifact; no GitHub binary
+release or AUR upload has been made.

@@ -88,6 +88,12 @@ Before uploading to AUR:
    `ssh://aur@aur.archlinux.org/intelligence-database-hsr.git`, copy PKGBUILD and
    .SRCINFO, inspect the staged diff, commit, and push after approval.
 
+The public review is [PR #1](https://github.com/Enterlessguy/OSU-HSR/pull/1).
+Recorded CI has passed actual public-pin installation, native X11/Wayland
+startup and uninstall. It also verifies the installed compiler reaches the
+pinned model with measurable learned movement and zero fixture fallbacks.
+This planning check dispatches no input and is not a full gameplay check.
+
 AUR holds build recipes, not prebuilt binaries. The recipe fetches the pinned
 source; its launchers and license helper are part of that source. Only PKGBUILD
 and .SRCINFO need to be uploaded. AUR publication is a separate authorized step.

@@ -92,9 +92,17 @@ native X11/Wayland startup passed in [CI run 36279524900](https://github.com/Ent
 at source commit `ba77630`. Windows and Ubuntu checks also passed. Namcap
 reported no errors; retained native-library hardening and dependency warnings
 are described in `packaging/arch/NATIVE_DEPENDENCIES.md`.
-Subsequent notice/source-archive packaging changes require their own final CI
-run. Representative real-map gameplay on a physical Linux desktop remains
-unverified. No AUR upload has occurred.
+The public source-pin build in [run 36280322335](https://github.com/Enterlessguy/OSU-HSR/actions/runs/36280322335)
+also passed installation, native startup and removal after the final native
+notices, source archives and runtime symlink layout were added.
+[Run 36280532846](https://github.com/Enterlessguy/OSU-HSR/actions/runs/36280532846)
+verified the installed compiler/exporter/planner/model chain: 41,317 synthetic
+frames, 26 learned segments, 39,078 changed samples and zero fallbacks.
+The final source pin `632f100ae008b29eb00d8498ff3042e1cfe58a25` passed all three
+jobs in [run 36280792929](https://github.com/Enterlessguy/OSU-HSR/actions/runs/36280792929),
+including the installed learned compiler, native X11/Wayland startup and
+uninstall gates. Representative real-map gameplay on a physical Linux desktop
+remains unverified. No AUR upload has occurred.
 
 The small VPS stopped responding during initial Arch build validation; further
 builds must use CI, not that host. A stop of the named validation container
