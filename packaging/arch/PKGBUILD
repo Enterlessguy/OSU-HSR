@@ -36,7 +36,7 @@ depends=(
   'zlib'
 )
 makedepends=('dotnet-sdk-8.0' 'git')
-source=("${pkgname}::git+https://github.com/Enterlessguy/OSU-HSR.git#commit=SOURCE_COMMIT_PLACEHOLDER")
+source=("${pkgname}::git+https://github.com/Enterlessguy/OSU-HSR.git#commit=fcf123caa5a167cd6b3060b7dc5164a32ed3381c")
 sha256sums=('SKIP')
 
 _source="$srcdir/$pkgname"
