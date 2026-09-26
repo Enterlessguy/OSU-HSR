@@ -543,6 +543,8 @@ def _default_auto_output() -> Path:
 
 
 def _default_state_log() -> Path:
+    if os.name == "nt":
+        return Path(__file__).resolve().parents[4] / "research" / "human-sim" / "output"
     state_home = _xdg_home("XDG_STATE_HOME", Path.home() / ".local" / "state")
     return state_home / "intelligence-database-hsr" / "logs"
 
@@ -902,7 +904,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--seed", type=int, default=42)
     audit.add_argument("--workers", type=int, default=4)
     audit.set_defaults(handler=_audit_library)
-    run = subparsers.add_parser("run", help="Launch the guarded research runner and client (Windows or X11 Linux)")
+    run = subparsers.add_parser("run", help="Launch the guarded research runner and client (Windows or X11/Wayland Linux)")
     run.add_argument("client")
     run.add_argument("trace")
     run.add_argument("--timeout-seconds", type=int, default=600)
@@ -917,7 +919,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.set_defaults(handler=_run)
     auto_run = subparsers.add_parser(
         "auto-run",
-        help="Launch the guarded runner on Windows or X11 Linux and automatically plan the selected HSR map (Wayland is unsupported)",
+        help="Launch the guarded runner on Windows or X11/Wayland Linux and automatically plan the selected HSR map",
     )
     auto_run.add_argument("client")
     auto_run.add_argument("--mode", choices=("perfect", "profile"), default="perfect")

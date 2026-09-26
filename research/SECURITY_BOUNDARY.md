@@ -8,8 +8,9 @@ This fork is for offline, visibly synthetic runs against its own local build.
   the player, before any network submission request can be created.
 - Gameplay requires a one-time local named-pipe token from `HumanSim.Runner`.
 - The runner launches the client itself and checks the executable, process,
-  beatmap, mods, window, DPI, focus, and playfield transform.
-- Focus loss, movement/resizing, DPI change, process exit, malformed trace, or
+  beatmap and mods. Windows guards window position/DPI; Linux guards native
+  client focus and playfield size/scale.
+- Focus loss, guarded geometry changes, process exit, malformed trace, or
   pipe/hash mismatch aborts and releases held keys.
 - Traces carry a permanent `synthetic: true` marker. The runner rejects traces
   without it.

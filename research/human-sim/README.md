@@ -58,12 +58,13 @@ promoted to 1000 Hz. The cursor cadence is capped at 1000 Hz and cannot exceed
 the trace rate, and every key transition carries an exact trace position. The
 runner stays alive between maps (a per-map abort such
 as focus loss or a window change only ends that map, not the session), and
-writes a timestamped `auto-run-*.log` beside the output traces. The runner uses
+writes timestamped `auto-run-*.log` diagnostics (under XDG state on Linux).
+The runner uses
 high process priority and 1 ms timer resolution on Windows; the client
 heartbeats every 50 ms so the clock model stays tight. Windows moves the cursor
-via absolute `SendInput`; Linux X11 dispatch uses XTest events and has no
-calibrated timing claim. The cursor is moved at a cadence that matches the effective trace rate,
-teleporting any distance in a single event with keys batched alongside. Ordinary
+via absolute `SendInput`; Linux consumes every synthetic cursor/key frame in
+the private client timeline on X11 and Wayland. Linux has no calibrated OS
+dispatch timing claim. Cursor and keys use the same recorded schedule. Ordinary
 circles use a rolling local waypoint horizon and persistent position, velocity,
 acceleration, wander, and coloured-noise state. Quintic Hermite segments share
 interior waypoint derivatives, so shallow flows carry through object boundaries
