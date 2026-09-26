@@ -40,10 +40,8 @@ checkdepends=('python-pytest')
 source=("${pkgname}::git+https://github.com/Enterlessguy/OSU-HSR.git#commit=a5a3296d0e94523e92427b718c6d063a896ecdbc")
 sha256sums=('SKIP')
 
-_source="$srcdir/$pkgname"
-_install_root="$pkgdir/usr/lib/$pkgname"
-
 build() {
+  local _source="$srcdir/$pkgname"
   cd "$_source"
   export DOTNET_CLI_HOME="$srcdir/dotnet-home"
   export NUGET_PACKAGES="$srcdir/nuget-packages"
@@ -55,6 +53,7 @@ build() {
 }
 
 check() {
+  local _source="$srcdir/$pkgname"
   cd "$_source"
   python -m pytest research/human-sim/tests -q
   test "$(dotnet 'osu.Desktop/bin/Release/net8.0/linux-x64/publish/osu!.dll' --print-research-boundary)" = 'research=True;login=False;submission=False'
@@ -63,6 +62,8 @@ check() {
 }
 
 package() {
+  local _source="$srcdir/$pkgname"
+  local _install_root="$pkgdir/usr/lib/$pkgname"
   cd "$_source"
 
   install -d "$_install_root"

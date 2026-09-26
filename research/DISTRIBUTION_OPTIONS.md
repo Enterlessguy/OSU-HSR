@@ -35,9 +35,8 @@ osu!stable is not covered by this ruleset-extension direction.
 ## 2. Separate build with HSR preinstalled — implemented track
 
 The shipped source is an osu!lazer fork with HSR in its osu!standard mod list,
-the continuous learned residual planner, and a guarded Windows runner. An
-experimental unprivileged X11/XTest backend is also implemented for Linux;
-Wayland is rejected. Build
+the continuous learned residual planner, and a guarded Windows runner. Linux
+uses an authenticated private client timeline on X11 and Wayland. Build
 with `HumanSimResearchBuild=true`. The compiler flag disables login and score
 submission; the runner requires its authenticated local client handshake.
 

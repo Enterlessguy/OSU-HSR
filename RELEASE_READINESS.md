@@ -96,7 +96,8 @@ builds must use CI, not that host. A stop of the named validation container
 was attempted but could not be confirmed over SSH. No VPS services or data
 were deliberately changed outside the isolated validation directory/container.
 
-Publishing the Linux review branch for CI needs separate approval under the
-source-release authorization above. AUR credentials and upload approval are
+The user approved publishing the Linux review branch and running CI on
+2026-09-27. The branch is `codex/hsr-linux-readiness`; main is unchanged.
+AUR credentials and upload approval are
 separate from source/CI review. Runtime-library commercial licence conditions
 must be retained; the source MIT licence does not relicense native BASS.

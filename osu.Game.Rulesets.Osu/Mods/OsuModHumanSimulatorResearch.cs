@@ -33,7 +33,7 @@ namespace osu.Game.Rulesets.Osu.Mods
 {
     /// <summary>
     /// Research-only handshake mod for the external human-movement simulator.
-    /// It never creates replay frames and leaves normal player input handling active.
+    /// Linux consumes a private synthetic input timeline; Windows uses the guarded research runner.
     /// </summary>
     public sealed class OsuModHumanSimulatorResearch : Mod, IResearchOnlyMod, IResearchGameplayStartHook,
                                                        IApplicableToDrawableRuleset<OsuHitObject>, IApplicableToPlayer, IApplicableToHUD,
