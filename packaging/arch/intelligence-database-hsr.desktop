@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Intelligence Database HSR (Research)
+Comment=Offline, visibly synthetic osu!lazer research build
+Exec=/usr/bin/intelligence-database-hsr
+Icon=/usr/share/pixmaps/intelligence-database-hsr.png
+Terminal=true
+Categories=Game;Education;Science;
+Keywords=osu;research;synthetic;human simulator;

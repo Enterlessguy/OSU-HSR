@@ -35,7 +35,9 @@ osu!stable is not covered by this ruleset-extension direction.
 ## 2. Separate build with HSR preinstalled — implemented track
 
 The shipped source is an osu!lazer fork with HSR in its osu!standard mod list,
-the continuous learned residual planner, and a guarded Windows runner. Build
+the continuous learned residual planner, and a guarded Windows runner. An
+experimental unprivileged X11/XTest backend is also implemented for Linux;
+Wayland is rejected. Build
 with `HumanSimResearchBuild=true`. The compiler flag disables login and score
 submission; the runner requires its authenticated local client handshake.
 
@@ -49,3 +51,14 @@ This track is suitable for the local V2 benchmark and experimental demos.
 There is no player-indistinguishability or anti-cheat-evasion claim. The
 extension feasibility document and bundled build are both release materials;
 only the bundled build is currently implemented.
+
+### Arch Linux package preparation
+
+`packaging/arch/` contains an x86_64 PKGBUILD and launcher files. The package
+targets X11 desktops, stages runtime files under `/usr/lib`, uses Arch's
+Python packages without network installs during `package()`, and keeps user
+data under XDG directories. It has not been built in an Arch environment or
+published to the AUR. See [the package review procedure](../packaging/arch/README.md).
+
+The build targets .NET 8. Microsoft support for .NET 8 ends 2026-11-10; the
+package must move to a supported runtime before then.

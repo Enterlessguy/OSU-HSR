@@ -6,7 +6,6 @@ import hashlib
 import json
 import math
 import os
-import shutil
 from pathlib import Path
 import subprocess
 
@@ -485,7 +484,7 @@ def _runtime_quality(args: argparse.Namespace) -> int:
 
 def _audit_library(args: argparse.Namespace) -> int:
     root = Path(__file__).resolve().parents[4]
-    exporter = root / "research" / "HumanSim.MapExporter" / "bin" / "Debug" / "net8.0" / "HumanSim.MapExporter.exe"
+    exporter = _dotnet_apphost(root, "HumanSim.MapExporter")
     report = audit_library(
         args.osu_storage,
         exporter,
@@ -519,20 +518,49 @@ def _runner_environment() -> dict[str, str]:
     return environment
 
 
+def _dotnet_apphost(root: Path, name: str) -> Path:
+    suffix = ".exe" if os.name == "nt" else ""
+    debug = root / "research" / name / "bin" / "Debug" / "net8.0" / f"{name}{suffix}"
+    release = root / "research" / name / "bin" / "Release" / "net8.0" / f"{name}{suffix}"
+    return debug if debug.is_file() else release
+
+
+def _default_osu_storage() -> Path:
+    if os.name == "nt":
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    else:
+        base = _xdg_home("XDG_DATA_HOME", Path.home() / ".local" / "share")
+    return base / "osu-development" / "files"
+
+
+def _default_auto_output() -> Path:
+    if os.name == "nt":
+        return Path(__file__).resolve().parents[4] / "research" / "human-sim" / "output" / "auto"
+    cache_home = _xdg_home("XDG_CACHE_HOME", Path.home() / ".cache")
+    return cache_home / "intelligence-database-hsr" / "auto"
+
+
+def _default_state_log() -> Path:
+    state_home = _xdg_home("XDG_STATE_HOME", Path.home() / ".local" / "state")
+    return state_home / "intelligence-database-hsr" / "logs"
+
+
+def _xdg_home(variable: str, default: Path) -> Path:
+    configured = os.environ.get(variable)
+    if configured:
+        path = Path(configured).expanduser()
+        if path.is_absolute():
+            return path
+    return default
+
+
 def _run(args: argparse.Namespace) -> int:
     root = Path(__file__).resolve().parents[4]
-    dotnet = root / ".dotnet" / "dotnet.exe"
-    if not dotnet.exists():
-        system_dotnet = shutil.which("dotnet")
-        if system_dotnet is None:
-            raise RuntimeError("Install a supported .NET 8 SDK before running a trace")
-        dotnet = Path(system_dotnet)
-    runner = root / "research" / "HumanSim.Runner" / "bin" / "Debug" / "net8.0-windows" / "HumanSim.Runner.dll"
-    if not dotnet.is_file() or not runner.exists():
+    runner = _dotnet_apphost(root, "HumanSim.Runner")
+    if not runner.is_file():
         raise RuntimeError("Build HumanSim.Runner and install a supported .NET 8 SDK before running a trace")
     completed = subprocess.run(
         [
-            str(dotnet),
             str(runner),
             "--client",
             str(Path(args.client).resolve()),
@@ -555,7 +583,7 @@ def _run(args: argparse.Namespace) -> int:
 
 def _run_auto(args: argparse.Namespace) -> int:
     root = Path(__file__).resolve().parents[4]
-    runner = root / "research" / "HumanSim.Runner" / "bin" / "Debug" / "net8.0-windows" / "HumanSim.Runner.exe"
+    runner = _dotnet_apphost(root, "HumanSim.Runner")
     if not runner.exists():
         raise RuntimeError("Build HumanSim.Runner before launching automatic planning")
     execution_mode, execution_blend, execution_model = _resolve_auto_execution(
@@ -605,8 +633,10 @@ def _run_auto(args: argparse.Namespace) -> int:
         command.extend(["--osu-storage", str(Path(args.osu_storage).resolve())])
     if execution_model:
         command.extend(["--execution-model", str(Path(execution_model).resolve())])
-    log_path = args.log_path or root / "research" / "human-sim" / "output" / f"auto-run-{datetime.now():%Y%m%d-%H%M%S}.log"
+    log_path = args.log_path or _default_state_log() / f"auto-run-{datetime.now():%Y%m%d-%H%M%S}.log"
     command.extend(["--log-path", str(Path(log_path).resolve())])
+    output_directory = args.output_directory or _default_auto_output()
+    command.extend(["--output-directory", str(Path(output_directory).resolve())])
     completed = subprocess.run(command, check=False, env=_runner_environment())
     return int(completed.returncode)
 
@@ -862,7 +892,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("output", help="JSON audit report path")
     audit.add_argument(
         "--osu-storage",
-        default=str(Path(os.environ.get("APPDATA", "")) / "osu-development" / "files"),
+        default=str(_default_osu_storage()),
         help="lazer content-addressed files directory",
     )
     audit.add_argument("--limit", type=int, default=100, help="Number of evenly sampled difficulties; zero audits all")
@@ -870,7 +900,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--seed", type=int, default=42)
     audit.add_argument("--workers", type=int, default=4)
     audit.set_defaults(handler=_audit_library)
-    run = subparsers.add_parser("run", help="Launch the guarded Windows runner and research client")
+    run = subparsers.add_parser("run", help="Launch the guarded research runner and client (Windows or X11 Linux)")
     run.add_argument("client")
     run.add_argument("trace")
     run.add_argument("--timeout-seconds", type=int, default=600)
@@ -885,7 +915,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.set_defaults(handler=_run)
     auto_run = subparsers.add_parser(
         "auto-run",
-        help="Launch the guarded runner and automatically plan the map/difficulty selected with HSR",
+        help="Launch the guarded runner on Windows or X11 Linux and automatically plan the selected HSR map (Wayland is unsupported)",
     )
     auto_run.add_argument("client")
     auto_run.add_argument("--mode", choices=("perfect", "profile"), default="perfect")
@@ -922,11 +952,12 @@ def build_parser() -> argparse.ArgumentParser:
     auto_run.add_argument(
         "--input-lead-ms",
         type=float,
-        default=8.0,
-        help="OS input-delivery compensation; 8 ms is the research-build calibration default",
+        default=8.0 if os.name == "nt" else 0.0,
+        help="Bounded input-delivery compensation in milliseconds (8 ms Windows default; no Linux calibration is assumed)",
     )
     auto_run.add_argument("--osu-storage", help="Override the lazer content-addressed files directory")
     auto_run.add_argument("--log-path", help="Write runner diagnostics to this file")
+    auto_run.add_argument("--output-directory", help="Override the trace cache directory")
     auto_run.set_defaults(handler=_run_auto)
     return parser
 

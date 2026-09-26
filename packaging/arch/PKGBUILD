@@ -1,0 +1,98 @@
+pkgname=intelligence-database-hsr
+pkgver=0.1.1
+pkgrel=1
+pkgdesc='Offline osu!lazer research build with visibly synthetic HSR traces'
+arch=('x86_64')
+url='https://github.com/Enterlessguy/OSU-HSR'
+license=('MIT' 'custom')
+depends=(
+  'alsa-lib'
+  'dotnet-runtime-8.0'
+  'ffmpeg'
+  'fontconfig'
+  'freetype2'
+  'libglvnd'
+  'libpng'
+  'libx11'
+  'libxcursor'
+  'libxi'
+  'libxinerama'
+  'libxrandr'
+  'libxss'
+  'libxtst'
+  'libxkbcommon'
+  'libpulse'
+  'python>=3.12'
+  'python-matplotlib'
+  'python-numpy'
+  'python-pandas'
+  'python-pillow'
+  'python-pyarrow'
+  'python-polars'
+  'python-scikit-learn'
+  'python-scipy'
+  'python-pydantic'
+  'xdotool'
+  'zlib'
+)
+makedepends=('dotnet-sdk-8.0' 'git')
+source=("${pkgname}::git+https://github.com/Enterlessguy/OSU-HSR.git#commit=SOURCE_COMMIT_PLACEHOLDER")
+sha256sums=('SKIP')
+
+_source="$srcdir/$pkgname"
+_install_root="$pkgdir/usr/lib/$pkgname"
+
+build() {
+  cd "$_source"
+  export DOTNET_CLI_HOME="$srcdir/dotnet-home"
+  export NUGET_PACKAGES="$srcdir/nuget-packages"
+  export DOTNET_CLI_TELEMETRY_OPTOUT=1
+
+  dotnet build osu.Desktop/osu.Desktop.csproj -c Release -p:HumanSimResearchBuild=true --configfile NuGet.Config
+  dotnet build research/HumanSim.MapExporter/HumanSim.MapExporter.csproj -c Release -p:HumanSimResearchBuild=true --configfile NuGet.Config
+  dotnet build research/HumanSim.ReplayExtractor/HumanSim.ReplayExtractor.csproj -c Release -p:HumanSimResearchBuild=true --configfile NuGet.Config
+  dotnet build research/HumanSim.Runner/HumanSim.Runner.csproj -c Release -p:HumanSimResearchBuild=true --configfile NuGet.Config
+}
+
+package() {
+  cd "$_source"
+
+  install -d "$_install_root"
+  install -Dm644 global.json "$_install_root/global.json"
+  install -Dm644 LICENCE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+  install -d "$_install_root/osu.Desktop/bin/Release/net8.0"
+  cp -a osu.Desktop/bin/Release/net8.0/. "$_install_root/osu.Desktop/bin/Release/net8.0/"
+
+  install -d "$_install_root/research/HumanSim.MapExporter/bin/Release/net8.0"
+  cp -a research/HumanSim.MapExporter/HumanSim.MapExporter.csproj "$_install_root/research/HumanSim.MapExporter/"
+  cp -a research/HumanSim.MapExporter/bin/Release/net8.0/. "$_install_root/research/HumanSim.MapExporter/bin/Release/net8.0/"
+
+  install -d "$_install_root/research/HumanSim.Runner/bin/Release/net8.0"
+  cp -a research/HumanSim.Runner/HumanSim.Runner.csproj "$_install_root/research/HumanSim.Runner/"
+  cp -a research/HumanSim.Runner/bin/Release/net8.0/. "$_install_root/research/HumanSim.Runner/bin/Release/net8.0/"
+
+  install -d "$_install_root/research/HumanSim.ReplayExtractor/bin/Release/net8.0"
+  cp -a research/HumanSim.ReplayExtractor/HumanSim.ReplayExtractor.csproj "$_install_root/research/HumanSim.ReplayExtractor/"
+  cp -a research/HumanSim.ReplayExtractor/bin/Release/net8.0/. "$_install_root/research/HumanSim.ReplayExtractor/bin/Release/net8.0/"
+
+  install -d "$_install_root/research"
+  cp -a research/human-sim "$_install_root/research/"
+  install -d "$_install_root/research/human-sim/.venv/bin"
+  ln -s /usr/bin/human-sim "$_install_root/research/human-sim/.venv/bin/human-sim"
+
+  install -Dm755 packaging/arch/human-sim-wrapper "$pkgdir/usr/bin/human-sim"
+  install -Dm755 packaging/arch/hsr-map-exporter "$pkgdir/usr/bin/hsr-map-exporter"
+  install -Dm755 packaging/arch/hsr-replay-extractor "$pkgdir/usr/bin/hsr-replay-extractor"
+  install -Dm755 packaging/arch/hsr-launcher "$pkgdir/usr/bin/intelligence-database-hsr"
+  install -Dm644 packaging/arch/intelligence-database-hsr.desktop "$pkgdir/usr/share/applications/intelligence-database-hsr.desktop"
+  install -Dm644 assets/lazer.png "$pkgdir/usr/share/pixmaps/intelligence-database-hsr.png"
+
+  python packaging/arch/collect-nuget-licenses.py \
+    "$pkgdir/usr/share/licenses/$pkgname/third-party" \
+    "$srcdir/nuget-packages" \
+    "$_install_root/osu.Desktop/bin/Release/net8.0" \
+    "$_install_root/research/HumanSim.MapExporter/bin/Release/net8.0" \
+    "$_install_root/research/HumanSim.ReplayExtractor/bin/Release/net8.0" \
+    "$_install_root/research/HumanSim.Runner/bin/Release/net8.0"
+}

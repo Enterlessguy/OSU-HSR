@@ -68,5 +68,19 @@ in ignored local verification storage. This is compiler planning evidence,
 not a final interactive gameplay capture.
 Package a clean Git commit with `research/package-source.ps1`; inspect ZIP
 contents and checksums. Record exact evidence in the private handoff.
-Publication to public `Enterlessguy/OSU-HSR` is authorized. Preserve these
-checks for future releases and publish only the reviewed source/model package.
+That source-release authorization applied to the 2026-09-26 source/model
+release. It does not authorize publishing the subsequent Linux compatibility
+changes or an AUR package.
+
+## Arch Linux compatibility preparation — 2026-09-26
+
+An experimental Linux runner backend and Arch package recipe have since been
+added locally. The runner selects unprivileged X11 XTest on Linux, checks the
+launched process/window/focus/geometry using `xdotool`, and fails closed for
+Wayland/XWayland. Linux X11 live dispatch has not been verified or calibrated;
+Windows remains the validated dispatch platform. Arch `makepkg`, `namcap`,
+installation/removal and live desktop checks are pending. This host has no
+Arch/WSL/container runtime. The recipe is not published to AUR. .NET 8 support
+ends on 2026-11-10, before which the source/package should move to a supported
+runtime. The build bundles native BASS libraries; the vendor's redistribution
+terms need a package-specific review before any binary publication.

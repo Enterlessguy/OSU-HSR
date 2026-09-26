@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+app_root=/usr/lib/intelligence-database-hsr
+client="$app_root/osu.Desktop/bin/Release/net8.0/osu!"
+exec /usr/bin/human-sim auto-run "$client" --mode profile --skill 50 --effort 68

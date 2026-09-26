@@ -134,6 +134,11 @@ def parse_runtime_telemetry(source: str | Path | Mapping[str, Any] | None) -> di
         if heartbeat_gap:
             telemetry.setdefault("heartbeat_max_gap_ms", float(heartbeat_gap.group(1)))
 
+    # New runners name this duration for the selected backend. Keep reading
+    # historical SendInput fields from earlier Windows-only telemetry.
+    telemetry.setdefault("dispatch_backend_p95_us", _get(telemetry, "send_input_p95_us"))
+    telemetry.setdefault("dispatch_backend_max_us", _get(telemetry, "send_input_max_us"))
+
     return {
         "source": source_label,
         "raw_text": raw_text,
@@ -170,14 +175,18 @@ def assess_runtime_quality(
     reasons: list[str] = []
     integrity_reasons: list[str] = []
     threshold_reasons: list[str] = []
+    input_backend = _get(telemetry, "input_backend")
+    backend_timing_unverified = input_backend == "x11-xtest" and not bool(_get(telemetry, "timing_only"))
+    if backend_timing_unverified:
+        reasons.append("X11 XTest dispatch has no platform-specific timing calibration")
 
     metric_names = (
         "dispatch_p95_us",
         "dispatch_p99_us",
         "dispatch_max_us",
         "key_down_p95_us",
-        "send_input_p95_us",
-        "send_input_max_us",
+        "dispatch_backend_p95_us",
+        "dispatch_backend_max_us",
         "deadline_coalesced_frames",
         "delivered_frames",
     )
@@ -189,8 +198,8 @@ def assess_runtime_quality(
         "dispatch_p99_us",
         "dispatch_max_us",
         "key_down_p95_us",
-        "send_input_p95_us",
-        "send_input_max_us",
+        "dispatch_backend_p95_us",
+        "dispatch_backend_max_us",
         "deadline_coalesced_frames",
         "delivered_frames",
         "heartbeat_count",
@@ -232,8 +241,8 @@ def assess_runtime_quality(
             ("dispatch p99", _get(telemetry, "dispatch_p99_us"), config.max_dispatch_p99_us),
             ("dispatch max", _get(telemetry, "dispatch_max_us"), config.max_dispatch_max_us),
             ("key-down p95", _get(telemetry, "key_down_p95_us"), config.max_key_down_p95_us),
-            ("SendInput p95", _get(telemetry, "send_input_p95_us"), config.max_send_input_p95_us),
-            ("SendInput max", _get(telemetry, "send_input_max_us"), config.max_send_input_max_us),
+            ("input backend p95", _get(telemetry, "dispatch_backend_p95_us"), config.max_send_input_p95_us),
+            ("input backend max", _get(telemetry, "dispatch_backend_max_us"), config.max_send_input_max_us),
         )
         for label, value, limit in checks:
             numeric = _number(value)
@@ -258,8 +267,8 @@ def assess_runtime_quality(
             integrity_reasons.append(f"heartbeat count {heartbeat_count} is below {config.minimum_heartbeat_count}")
         if heartbeat_gap is not None and heartbeat_gap > config.max_heartbeat_gap_ms:
             integrity_reasons.append(f"heartbeat gap {heartbeat_gap:g} ms exceeds {config.max_heartbeat_gap_ms:g} ms")
-        if timing_only and _get(telemetry, "send_input_p95_us") is None:
-            # A timing-only harness intentionally does not call SendInput; its
+        if timing_only and _get(telemetry, "dispatch_backend_p95_us") is None:
+            # A timing-only harness intentionally does not dispatch input; its
             # absence is valid and is retained in the raw telemetry.
             pass
 
@@ -276,6 +285,10 @@ def assess_runtime_quality(
     elif threshold_reasons:
         status = "degraded"
         classification = "runtime-degraded"
+        accepted = False
+    elif backend_timing_unverified:
+        status = "not_validated"
+        classification = "runtime-not-calibrated"
         accepted = False
     else:
         status = "clean"

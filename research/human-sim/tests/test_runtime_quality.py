@@ -37,6 +37,14 @@ def test_inline_json_runtime_telemetry_is_accepted():
     assert assessment["status"] == "clean"
 
 
+def test_x11_dispatch_is_not_marked_calibrated_by_windows_thresholds():
+    assessment = assess_runtime_quality(_clean(input_backend="x11-xtest"))
+    assert assessment["status"] == "not_validated"
+    assert assessment["classification"] == "runtime-not-calibrated"
+    assert not assessment["accepted"]
+    assert any("no platform-specific timing calibration" in reason for reason in assessment["reasons"])
+
+
 def test_latency_outlier_is_degraded_and_raw_telemetry_is_preserved():
     assessment = assess_runtime_quality(_clean(dispatch_max_us=300_000))
     assert assessment["status"] == "degraded"

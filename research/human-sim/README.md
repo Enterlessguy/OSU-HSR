@@ -11,9 +11,23 @@ No existing local HSR runs are eligible for that training corpus.
 
 ## Setup
 
+The Linux dispatch target is Arch Linux x86_64 under an X11 desktop session.
+Wayland/XWayland is rejected. Live Linux gameplay has not yet been verified,
+so Windows remains the validated dispatch platform. See
+`packaging/arch/README.md` for package preparation and review.
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[test]"
+```
+
+For a Linux development checkout, run from the repository root in an X11
+session:
+
+```sh
+./research/setup-research.sh
+./research/build-research.sh Debug
+./research/run-dev-build.sh
 ```
 
 ## Typical flow
@@ -44,11 +58,11 @@ promoted to 1000 Hz. The cursor cadence is capped at 1000 Hz and cannot exceed
 the trace rate, and every key transition carries an exact trace position. The
 runner stays alive between maps (a per-map abort such
 as focus loss or a window change only ends that map, not the session), and
-writes a timestamped `auto-run-*.log` beside the output traces. The runner
-executes at high process priority with 1 ms timer resolution and a
-drift-correcting gameplay clock model; the client heartbeats every 50 ms so the
-model stays tight. The cursor is moved at a cadence that matches the effective
-trace rate via absolute `SendInput` moves,
+writes a timestamped `auto-run-*.log` beside the output traces. The runner uses
+high process priority and 1 ms timer resolution on Windows; the client
+heartbeats every 50 ms so the clock model stays tight. Windows moves the cursor
+via absolute `SendInput`; Linux X11 dispatch uses XTest events and has no
+calibrated timing claim. The cursor is moved at a cadence that matches the effective trace rate,
 teleporting any distance in a single event with keys batched alongside. Ordinary
 circles use a rolling local waypoint horizon and persistent position, velocity,
 acceleration, wander, and coloured-noise state. Quintic Hermite segments share
@@ -219,6 +233,9 @@ human-sim runtime-quality output/auto-run-YYYYMMDD-HHMMSS.log
 Default thresholds are dispatch p95 1 ms, dispatch p99 5 ms, dispatch max
 100 ms, key-down p95 2.5 ms, `SendInput` p95 2.5 ms, `SendInput` max 100 ms,
 deadline coalescing <= 2% of delivered frames, and heartbeat gaps <= 2 s.
+These thresholds were established from the Windows `SendInput` path. X11 runs
+report backend timings, but the runtime-quality classifier leaves XTest runs
+unvalidated until Linux timing has its own calibration.
 Override individual values with the corresponding `--max-*`,
 `--max-coalesced-fraction`, or `--max-heartbeat-gap-ms` options. A run is
 `runtime-validated/clean`, `runtime-degraded`, or `runtime-invalid`; focus,

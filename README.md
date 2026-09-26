@@ -3,8 +3,8 @@
 HSR (Human Simulator Research) is an offline research fork of osu!lazer for
 generating and replaying deterministic, visibly synthetic osu!standard input
 traces. This checkpoint contains the second-generation mathematical planner,
-guarded Windows input runner, replay research pipeline, and cross-map
-validation tooling.
+guarded Windows runner (with experimental X11 dispatch on Arch Linux), replay
+research pipeline, and cross-map validation tooling.
 
 > [!IMPORTANT]
 > HSR is not an osu! cheat and must not be used with the production client or
@@ -38,8 +38,9 @@ troubleshooting and both distribution directions.
 - Hash-bound map/mod/clock-rate validation and deterministic trace caching.
 - 105-map library audit passing across 49,685 objects and more than 9 million
   generated frames.
-- The release Python suite passes 69 tests; build/runtime audits are recorded
-  in the release readiness document.
+- Current local Python run: 70 passed; two POSIX-only path tests were skipped
+  on Windows. Build/runtime audits are recorded in the release readiness
+  document.
 
 The mathematical system provides the baseline and safety envelope for the
 pinned v4 learned residual model. The integrated hybrid delivered learned
@@ -57,7 +58,9 @@ See [release notes](research/RELEASE_NOTES.md),
 ## Distribution directions
 
 - **Bundled build:** implemented osu!lazer research fork with HSR preinstalled,
-  login/submission disabled and the Intelligence Database watermark.
+  login/submission disabled and the Intelligence Database watermark. Windows
+  remains the verified dispatch platform; an Arch Linux X11 path and PKGBUILD
+  are prepared but have not yet been verified by an Arch build or live run.
 - **Official-client extension:** a custom ruleset is a feasibility direction;
   an arbitrary Mod DLL is not supported by the official loader. No extension
   DLL is shipped. See [both directions](research/DISTRIBUTION_OPTIONS.md).
@@ -77,7 +80,7 @@ Python mathematical planner ----> synthetic trace + hash-bound manifest
 HumanSim.Runner <---- authenticated named-pipe handshake ----> HSR client mod
     |
     v
-ordinary Windows SendInput, guarded by process/window/focus/DPI/map checks
+Windows SendInput or Linux X11/XTest, guarded by process/window/focus/map checks
 ```
 
 ### Components
@@ -89,8 +92,8 @@ ordinary Windows SendInput, guarded by process/window/focus/DPI/map checks
 - `research/human-sim` contains planning, trace validation, corpus extraction,
   model fitting, evaluation, and library-audit commands.
 - `research/HumanSim.Runner` validates and dispatches traces through ordinary
-  Windows input while monitoring focus, clock drift, transforms, and process
-  identity.
+  Windows input or experimental unprivileged X11/XTest while monitoring focus,
+  clock drift, transforms, and process identity.
 - `research/HumanSim.ReplayExtractor` decodes local `.osr` research captures
   and hashes player identity with a private salt.
 
@@ -99,13 +102,21 @@ See `HANDOFF.md` for detailed implementation history and
 
 ## Requirements
 
-- Windows 10 or newer.
+- Windows 10 or newer (verified dispatch platform), or Arch Linux x86_64 with
+  an X11 desktop session (experimental; Wayland is rejected).
 - PowerShell 7 recommended.
 - Python 3.12 or newer.
-- A patched .NET 8 SDK (8.0.425 / runtime 8.0.31 verified locally), either
-  under `.dotnet` or available on PATH.
+- .NET 8 SDK (8.0.425 / runtime 8.0.31 verified locally); Arch package prep
+  targets Arch's `dotnet-sdk-8.0` and `dotnet-runtime-8.0`. .NET 8 support ends
+  on 2026-11-10, so a supported runtime upgrade is required before then.
 - A local osu! beatmap library for automatic map selection and live research
   runs.
+
+Linux input requires X11, the XTest extension, `xdotool`, and a visible,
+focused research-client window. Wayland and XWayland sessions are deliberately
+rejected. X11 dispatch is not yet calibrated or verified in a live gameplay
+run. Package files are staged in `packaging/arch/`; the AUR package has not
+been published. See [Arch package preparation](packaging/arch/README.md).
 
 Do not commit local beatmaps, replay exports, credentials, raw player data,
 generated traces, or trained binary models.
@@ -136,12 +147,16 @@ $dotnet = ".\.dotnet\dotnet.exe"
 
 ## Run
 
-The interactive launcher builds all components, updates the Python environment,
+On Windows, the interactive launcher builds all components, updates the Python environment,
 prompts for skill and effort, then starts the guarded automatic-planning runner:
 
 ```powershell
 .\research\run-dev-build.ps1
 ```
+
+On Arch Linux, see [packaging instructions](packaging/arch/README.md) for the
+local `makepkg` and review workflow. Do not treat that package as a verified
+release until its Arch CI and live X11 checks pass.
 
 Alternatively, after building:
 
