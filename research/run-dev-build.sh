@@ -2,19 +2,12 @@
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-session="${XDG_SESSION_TYPE:-}"
-if [[ "$session" == "wayland" || -n "${WAYLAND_DISPLAY:-}" ]]; then
-    printf '%s\n' 'HSR dispatch requires an X11 session; Wayland is rejected because global focus and target-window checks are unavailable.' >&2
+if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+    printf '%s\n' 'No desktop display is available. Start an X11 or Wayland session to run HSR.' >&2
     exit 1
 fi
-if [[ -z "${DISPLAY:-}" ]]; then
-    printf '%s\n' 'No X11 DISPLAY is available. Start an X11 desktop session to run HSR.' >&2
-    exit 1
-fi
-command -v xdotool >/dev/null 2>&1 || { printf '%s\n' 'Install xdotool for X11 window and focus checks.' >&2; exit 1; }
 command -v dotnet >/dev/null 2>&1 || { printf '%s\n' 'Install the .NET 8 SDK/runtime and make dotnet available on PATH.' >&2; exit 1; }
 
-python="$root/research/human-sim/.venv/bin/python"
 human_sim="$root/research/human-sim/.venv/bin/human-sim"
 if [[ ! -x "$human_sim" ]]; then
     "$root/research/setup-research.sh"

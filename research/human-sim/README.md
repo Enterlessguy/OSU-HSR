@@ -11,9 +11,9 @@ No existing local HSR runs are eligible for that training corpus.
 
 ## Setup
 
-The Linux dispatch target is Arch Linux x86_64 under an X11 desktop session.
-Wayland/XWayland is rejected. Live Linux gameplay has not yet been verified,
-so Windows remains the validated dispatch platform. See
+The Linux target is Arch Linux x86_64 under X11 or Wayland. The owned research
+client consumes an authenticated synthetic timeline; no global input backend
+is used. Windows keeps its separate SendInput delivery route. See
 `packaging/arch/README.md` for package preparation and review.
 
 ```powershell
@@ -21,7 +21,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[test]"
 ```
 
-For a Linux development checkout, run from the repository root in an X11
+For a Linux development checkout, run from the repository root in a desktop
 session:
 
 ```sh

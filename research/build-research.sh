@@ -8,6 +8,7 @@ case "$configuration" in
 esac
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
 export DOTNET_CLI_HOME="$root/.dotnet-home"
 export NUGET_PACKAGES="$root/.nuget/packages"
 export DOTNET_CLI_TELEMETRY_OPTOUT=1
@@ -16,13 +17,7 @@ command -v "$dotnet_cmd" >/dev/null 2>&1 || { printf 'Install the .NET 8 SDK and
 
 build_project() {
     local project="$1"
-    local assets="$(dirname -- "$project")/obj/project.assets.json"
-    local args=(build "$project" --configuration "$configuration" -p:HumanSimResearchBuild=true)
-    if [[ -f "$assets" ]]; then
-        args+=(--no-restore)
-    else
-        args+=(--configfile "$root/NuGet.Config")
-    fi
+    local args=(build "$project" --configuration "$configuration" -p:HumanSimResearchBuild=true --configfile "$root/NuGet.Config")
     "$dotnet_cmd" "${args[@]}"
 }
 

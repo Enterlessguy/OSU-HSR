@@ -72,15 +72,31 @@ That source-release authorization applied to the 2026-09-26 source/model
 release. It does not authorize publishing the subsequent Linux compatibility
 changes or an AUR package.
 
-## Arch Linux compatibility preparation — 2026-09-26
+## Linux / Arch readiness audit — 2026-09-27
 
-An experimental Linux runner backend and Arch package recipe have since been
-added locally. The runner selects unprivileged X11 XTest on Linux, checks the
-launched process/window/focus/geometry using `xdotool`, and fails closed for
-Wayland/XWayland. Linux X11 live dispatch has not been verified or calibrated;
-Windows remains the validated dispatch platform. Arch `makepkg`, `namcap`,
-installation/removal and live desktop checks are pending. This host has no
-Arch/WSL/container runtime. The recipe is not published to AUR. .NET 8 support
-ends on 2026-11-10, before which the source/package should move to a supported
-runtime. The build bundles native BASS libraries; the vendor's redistribution
-terms need a package-specific review before any binary publication.
+The initial XTest/xdotool prototype was superseded by authenticated private
+client timeline playback for X11 and Wayland. Windows SendInput is retained.
+The client checks the transferred trace digest, token, map and rate; no
+production-client attachment or global Linux input backend exists.
+
+Local Windows checks: client and runner Release builds have zero warnings/errors;
+research boundary disables login/submission; 153 actual input-handler cases
+and 14 malformed transport/hash cases pass; runner protocol/scheduling contracts
+pass. Python: 71 passed, 3 POSIX-only cases skipped. Shell syntax and the frozen
+model digest pass. The public source/history scan found no recognized findings.
+
+The Arch recipe publishes only linux-x64 runtime output and planner/model files,
+uses system Python dependencies, supplies check(), desktop launchers and a
+NuGet licence inventory. AUR metadata, makepkg/namcap, package installation and
+representative X11/Wayland desktop checks remain release gates until Linux
+CI or equivalent evidence has been collected. No AUR upload has occurred.
+
+The small VPS stopped responding during initial Arch build validation; further
+builds must use CI, not that host. A stop of the named validation container
+was attempted but could not be confirmed over SSH. No VPS services or data
+were deliberately changed outside the isolated validation directory/container.
+
+Publishing the Linux review branch for CI needs separate approval under the
+source-release authorization above. AUR credentials and upload approval are
+separate from source/CI review. Runtime-library commercial licence conditions
+must be retained; the source MIT licence does not relicense native BASS.

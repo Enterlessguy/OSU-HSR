@@ -2,4 +2,17 @@
 set -eu
 app_root=/usr/lib/intelligence-database-hsr
 client="$app_root/osu.Desktop/bin/Release/net8.0/osu!"
-exec /usr/bin/human-sim auto-run "$client" --mode profile --skill 50 --effort 68
+case "${1:-}" in
+  --diagnostics)
+    /usr/bin/dotnet "$app_root/osu.Desktop/bin/Release/net8.0/osu!.dll" --print-research-boundary
+    /usr/bin/dotnet "$app_root/osu.Desktop/bin/Release/net8.0/osu!.dll" --verify-research-trace-input
+    /usr/bin/dotnet "$app_root/research/HumanSim.Runner/bin/Release/net8.0/HumanSim.Runner.dll" --verify-runner-contracts
+    exec /usr/bin/human-sim --help
+    ;;
+  --client-only) exec "$client" ;;
+esac
+if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+  printf '%s\n' 'Start an X11 or Wayland desktop session to run Intelligence Database HSR.' >&2
+  exit 1
+fi
+exec /usr/bin/human-sim auto-run "$client" --mode profile --skill 50 --effort 68 "$@"

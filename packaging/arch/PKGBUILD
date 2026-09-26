@@ -1,5 +1,5 @@
 pkgname=intelligence-database-hsr
-pkgver=0.1.1
+pkgver=0.1.2
 pkgrel=1
 pkgdesc='Offline osu!lazer research build with visibly synthetic HSR traces'
 arch=('x86_64')
@@ -19,7 +19,6 @@ depends=(
   'libxinerama'
   'libxrandr'
   'libxss'
-  'libxtst'
   'libxkbcommon'
   'libpulse'
   'python>=3.12'
@@ -32,10 +31,11 @@ depends=(
   'python-scikit-learn'
   'python-scipy'
   'python-pydantic'
-  'xdotool'
+  'python-joblib'
   'zlib'
 )
 makedepends=('dotnet-sdk-8.0' 'git')
+checkdepends=('python-pytest')
 source=("${pkgname}::git+https://github.com/Enterlessguy/OSU-HSR.git#commit=fcf123caa5a167cd6b3060b7dc5164a32ed3381c")
 sha256sums=('SKIP')
 
@@ -48,10 +48,17 @@ build() {
   export NUGET_PACKAGES="$srcdir/nuget-packages"
   export DOTNET_CLI_TELEMETRY_OPTOUT=1
 
-  dotnet build osu.Desktop/osu.Desktop.csproj -c Release -p:HumanSimResearchBuild=true --configfile NuGet.Config
-  dotnet build research/HumanSim.MapExporter/HumanSim.MapExporter.csproj -c Release -p:HumanSimResearchBuild=true --configfile NuGet.Config
-  dotnet build research/HumanSim.ReplayExtractor/HumanSim.ReplayExtractor.csproj -c Release -p:HumanSimResearchBuild=true --configfile NuGet.Config
-  dotnet build research/HumanSim.Runner/HumanSim.Runner.csproj -c Release -p:HumanSimResearchBuild=true --configfile NuGet.Config
+  for project in osu.Desktop/osu.Desktop.csproj research/HumanSim.MapExporter/HumanSim.MapExporter.csproj research/HumanSim.ReplayExtractor/HumanSim.ReplayExtractor.csproj research/HumanSim.Runner/HumanSim.Runner.csproj; do
+    dotnet publish "$project" -c Release -r linux-x64 --self-contained false -p:HumanSimResearchBuild=true --configfile NuGet.Config
+  done
+}
+
+check() {
+  cd "$_source"
+  python -m pytest research/human-sim/tests -q
+  test "$(dotnet 'osu.Desktop/bin/Release/net8.0/linux-x64/publish/osu!.dll' --print-research-boundary)" = 'research=True;login=False;submission=False'
+  dotnet 'osu.Desktop/bin/Release/net8.0/linux-x64/publish/osu!.dll' --verify-research-trace-input
+  dotnet research/HumanSim.Runner/bin/Release/net8.0/linux-x64/publish/HumanSim.Runner.dll --verify-runner-contracts
 }
 
 package() {
@@ -62,22 +69,25 @@ package() {
   install -Dm644 LICENCE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 
   install -d "$_install_root/osu.Desktop/bin/Release/net8.0"
-  cp -a osu.Desktop/bin/Release/net8.0/. "$_install_root/osu.Desktop/bin/Release/net8.0/"
+  cp -a osu.Desktop/bin/Release/net8.0/linux-x64/publish/. "$_install_root/osu.Desktop/bin/Release/net8.0/"
 
   install -d "$_install_root/research/HumanSim.MapExporter/bin/Release/net8.0"
   cp -a research/HumanSim.MapExporter/HumanSim.MapExporter.csproj "$_install_root/research/HumanSim.MapExporter/"
-  cp -a research/HumanSim.MapExporter/bin/Release/net8.0/. "$_install_root/research/HumanSim.MapExporter/bin/Release/net8.0/"
+  cp -a research/HumanSim.MapExporter/bin/Release/net8.0/linux-x64/publish/. "$_install_root/research/HumanSim.MapExporter/bin/Release/net8.0/"
 
   install -d "$_install_root/research/HumanSim.Runner/bin/Release/net8.0"
   cp -a research/HumanSim.Runner/HumanSim.Runner.csproj "$_install_root/research/HumanSim.Runner/"
-  cp -a research/HumanSim.Runner/bin/Release/net8.0/. "$_install_root/research/HumanSim.Runner/bin/Release/net8.0/"
+  cp -a research/HumanSim.Runner/bin/Release/net8.0/linux-x64/publish/. "$_install_root/research/HumanSim.Runner/bin/Release/net8.0/"
 
   install -d "$_install_root/research/HumanSim.ReplayExtractor/bin/Release/net8.0"
   cp -a research/HumanSim.ReplayExtractor/HumanSim.ReplayExtractor.csproj "$_install_root/research/HumanSim.ReplayExtractor/"
-  cp -a research/HumanSim.ReplayExtractor/bin/Release/net8.0/. "$_install_root/research/HumanSim.ReplayExtractor/bin/Release/net8.0/"
+  cp -a research/HumanSim.ReplayExtractor/bin/Release/net8.0/linux-x64/publish/. "$_install_root/research/HumanSim.ReplayExtractor/bin/Release/net8.0/"
 
   install -d "$_install_root/research"
-  cp -a research/human-sim "$_install_root/research/"
+  install -d "$_install_root/research/human-sim/models/experimental"
+  cp -a research/human-sim/src "$_install_root/research/human-sim/"
+  install -Dm644 research/human-sim/models/experimental/seed101-math-residual-g100-v4.json "$_install_root/research/human-sim/models/experimental/seed101-math-residual-g100-v4.json"
+  find "$_install_root/research/human-sim/src" -type d -name __pycache__ -exec rm -r -- '{}' +
   install -d "$_install_root/research/human-sim/.venv/bin"
   ln -s /usr/bin/human-sim "$_install_root/research/human-sim/.venv/bin/human-sim"
 

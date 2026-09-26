@@ -176,6 +176,29 @@ def assess_runtime_quality(
     integrity_reasons: list[str] = []
     threshold_reasons: list[str] = []
     input_backend = _get(telemetry, "input_backend")
+    if input_backend == "research-client":
+        planned = _integer(_get(telemetry, "planned_frames"), 0)
+        consumed = _integer(_get(telemetry, "client_consumed_frames"), 0)
+        invalid = (
+            _get(telemetry, "status") != "completed"
+            or planned <= 0 or consumed != planned
+            or _integer(_get(telemetry, "delivered_frames"), 0) != planned
+            or _integer(_get(telemetry, "heartbeat_count"), 0) < config.minimum_heartbeat_count
+            or _number(_get(telemetry, "heartbeat_max_gap_ms"), float("inf")) > config.max_heartbeat_gap_ms
+            or any(marker in raw_lower for marker in ("lost focus", "pipe disconnected", "run aborted", "digest mismatch"))
+        )
+        return {
+            "schema_version": 1,
+            "status": "invalid" if invalid else "not_validated",
+            "classification": "runtime-invalid" if invalid else "client-timeline-complete/not-os-dispatch-calibrated",
+            "accepted": False,
+            "reasons": ["client frame accounting or integrity check failed"] if invalid else
+                       ["client timeline delivery is complete; OS dispatch latency thresholds do not apply to this backend"],
+            "threshold_reasons": [],
+            "integrity_reasons": ["client delivery mismatch"] if invalid else [],
+            "config": asdict(config),
+            "raw_diagnostics": {"source": parsed["source"], "raw_text": raw_text, "parsed_telemetry": telemetry},
+        }
     backend_timing_unverified = input_backend == "x11-xtest" and not bool(_get(telemetry, "timing_only"))
     if backend_timing_unverified:
         reasons.append("X11 XTest dispatch has no platform-specific timing calibration")

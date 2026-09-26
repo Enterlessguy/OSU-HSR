@@ -5,7 +5,18 @@ from pathlib import Path
 
 import pytest
 
-from human_sim.cli import _default_auto_output, _default_osu_storage, _default_state_log, _dotnet_apphost
+from human_sim.cli import _default_auto_output, _default_osu_storage, _default_state_log, _dotnet_apphost, _runner_environment
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Linux environment names are case-sensitive")
+def test_linux_runner_preserves_path_and_case_distinct_variables(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("HSR_VALUE", "upper")
+    monkeypatch.setenv("hsr_value", "lower")
+    environment = _runner_environment()
+    assert environment["PATH"] == "/usr/bin:/bin"
+    assert environment["HSR_VALUE"] == "upper"
+    assert environment["hsr_value"] == "lower"
 
 
 @pytest.mark.skipif(os.name != "posix", reason="XDG defaults apply to the Linux/macOS CLI")

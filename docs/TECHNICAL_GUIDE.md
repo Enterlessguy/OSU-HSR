@@ -2,8 +2,8 @@
 
 **Human Simulator Research · Intelligence Database**
 
-HSR is a research fork of osu!lazer. Windows is the verified runtime; an
-experimental Arch Linux path supports X11 only. It generates visibly synthetic
+HSR is a research fork of osu!lazer for Windows and Linux. Linux uses private
+client input for X11 and Wayland. It generates visibly synthetic
 movement and key traces from decoded beatmaps, compares mathematical and learned
 movement, and executes traces through a guarded runner against its own client.
 It is independent of ppy Pty Ltd. The upstream base is `2026.726.0-lazer`.
@@ -76,8 +76,8 @@ and [official custom-mode documentation](https://osu.ppy.sh/wiki/en/Game_mode#cu
 
 ### Requirements
 
-- Windows 10 or newer (verified), or Arch Linux x86_64 with X11 (experimental;
-  Wayland/XWayland is rejected). PowerShell 7 is recommended on Windows.
+- Windows 10 or newer, or Arch Linux x86_64 with X11 or Wayland.
+  PowerShell 7 is recommended on Windows.
 - Python 3.12; the pinned environment was verified on Windows Python 3.12.
 - A patched .NET 8 SDK on PATH or installed under repository `.dotnet`.
   SDK 8.0.425 / host and runtime 8.0.31 were verified locally.
@@ -158,7 +158,7 @@ flowchart TD
     G --> T[Synthetic trace and manifest]
     T --> R[C# runner: validate and schedule]
     H[Research client handshake and clock samples] --> R
-    R --> I[Windows SendInput or Linux X11/XTest]
+    R --> I[Windows SendInput or private Linux client timeline]
     I --> H
 ```
 
@@ -333,13 +333,15 @@ gameplay-clock/QPC pairs. Heartbeats are normally emitted at 50 ms intervals.
 The clock model fits gameplay time against the high-resolution host clock,
 tracks correction, and anchors extrapolation to recent samples. The runner
 maps playfield positions to the guarded window transform. Windows schedules
-ordinary `SendInput`; Linux schedules unprivileged X11 XTest mouse/key events.
-Linux requires `DISPLAY`, libX11, libXtst, `xdotool`, the XTest extension and a
-visible focused research window. Wayland/XWayland is rejected because this
-implementation cannot establish the same focus/window guard there. Linux live
-gameplay is not yet verified or timing-calibrated; Windows runtime measurements
-do not transfer to Linux. Cursor dispatch is capped by trace rate and requested
-cursor rate (up to 1,000 Hz).
+ordinary `SendInput`. Linux transfers a SHA-256 checked, bounded synthetic
+timeline to the client through the authenticated pipe. The client validates
+token/map/rate and uses a private frame-accurate input handler with its gameplay
+clock. Every scheduled cursor position and key edge is retained even when the
+render clock arrives late; counters track consumed frames and learned exposure.
+The handler uses normal client focus and playfield geometry on X11 and Wayland,
+with no global input permission. It does not create a replay score or change
+the frozen model. OS dispatch latency calibration is a separate measurement;
+Windows runtime timing values do not transfer to the client timeline backend.
 
 The guard monitors process/window identity, foreground focus, playfield/DPI
 changes and connection health. Focus loss, invalid transform, process exit,
@@ -483,13 +485,14 @@ Expected mapping diagnostic: 33 configured maps, maximum depth 32.
 The release test suite passed 69 tests, including stack/reversal/closed-route
 contacts, C2 outer joins, model rejection, zero exposure, invalid timestamps,
 download traversal and polynomial-envelope scaling equivalence.
-The current Windows run passes 70 tests; two POSIX-only path checks are skipped
-on Windows.
+The current Windows run passes 71 tests; three POSIX-only checks are skipped
+on Windows. Linux delivery diagnostics include 153 scheduled-frame checks and
+14 transport rejection cases.
 
 | Symptom | Check/action |
 |---|---|
 | Missing Python/SDK | Run setup; install patched .NET 8; check PATH or local `.dotnet` |
-| Linux runner rejects session | Use a native X11 session, not Wayland/XWayland; confirm `DISPLAY`, XTest and `xdotool` |
+| Linux launcher has no display | Start an X11 or Wayland session; use `--diagnostics` for checks without a display |
 | Linux package lacks a command | Review Arch runtime dependencies and installed files with `namcap` and `pacman -Ql` |
 | Planner version mismatch | Bind the environment to this checkout; rebuild runner; do not share old editable source |
 | Model hash mismatch | Restore the pinned LF JSON; verify raw/canonical hashes; do not bypass checks |

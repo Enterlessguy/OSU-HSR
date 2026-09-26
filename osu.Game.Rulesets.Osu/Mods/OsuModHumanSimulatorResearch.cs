@@ -11,6 +11,9 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
+using HumanSim.Transport;
+using osu.Game.Research;
+using osu.Game.Rulesets.Osu.Research;
 using osu.Framework.Graphics.Sprites;
 using osu.Framework.Localisation;
 using osu.Framework.Logging;
@@ -70,6 +73,7 @@ namespace osu.Game.Rulesets.Osu.Mods
         private bool gameplayClockObservedRunning;
         private bool abortRequested;
         private double clockRate = 1.0;
+        private ResearchTraceInputHandler? researchInput;
 
         public void ApplyToDrawableRuleset(DrawableRuleset<OsuHitObject> drawableRuleset)
             => this.drawableRuleset = (DrawableOsuRuleset)drawableRuleset;
@@ -149,6 +153,17 @@ namespace osu.Game.Rulesets.Osu.Mods
             if (!acknowledgement.Accepted || acknowledgement.RunToken != runToken)
                 throw new InvalidOperationException($"Research runner rejected this client: {acknowledgement.Reason ?? "unknown reason"}");
 
+            if (Environment.GetEnvironmentVariable("HUMAN_SIM_INPUT_BACKEND") == "research-client")
+            {
+                if (!ResearchBuild.Enabled || acknowledgement.InputBackend != "research-client"
+                    || acknowledgement.TracePath == null || acknowledgement.TraceSha256 == null)
+                    throw new InvalidOperationException("The research client did not receive an authenticated trace descriptor.");
+                ResearchTraceData trace = ResearchTraceData.Read(acknowledgement.TracePath, acknowledgement.TraceSha256);
+                trace.Validate(runToken, hello.BeatmapSha256, clockRate);
+                researchInput = new ResearchTraceInputHandler(trace);
+                drawableRuleset.SetResearchInputHandler(researchInput);
+            }
+
             _ = Task.Run(() =>
             {
                 try
@@ -188,6 +203,11 @@ namespace osu.Game.Rulesets.Osu.Mods
 
         public void Update(Playfield playfield)
         {
+            if (researchInput?.Failure != null)
+            {
+                abortGameplay(new InvalidOperationException(researchInput.Failure), researchInput.Failure);
+                return;
+            }
             if (pipeFailed)
             {
                 abortGameplay(new IOException("Research runner pipe disconnected."), "Human simulator runner pipe disconnected; returning to song select.");
@@ -292,6 +312,9 @@ namespace osu.Game.Rulesets.Osu.Mods
                         run_token = token,
                         qpc = now,
                         gameplay_clock_time_ms = gameplayClockTimeMs,
+                        client_consumed_frames = researchInput?.ConsumedFrames ?? 0,
+                        client_expected_frames = researchInput?.ExpectedFrames ?? 0,
+                        client_playback_complete = researchInput?.Completed ?? false,
                     }),
                     () => Interlocked.Exchange(ref lastHeartbeatQpc, now)).ConfigureAwait(false);
             }
@@ -354,12 +377,14 @@ namespace osu.Game.Rulesets.Osu.Mods
 
             abortRequested = true;
             pipeFailed = true;
+            if (researchInput != null) drawableRuleset?.SetResearchInputHandler(null!);
             Logger.Error(exception, message);
             player?.Exit();
         }
 
         public void Dispose()
         {
+            if (researchInput != null) drawableRuleset?.SetResearchInputHandler(null!);
             writer?.Dispose();
             reader?.Dispose();
             pipe?.Dispose();
@@ -421,6 +446,15 @@ namespace osu.Game.Rulesets.Osu.Mods
 
         private sealed class Acknowledgement
         {
+            [JsonPropertyName("input_backend")]
+            public string? InputBackend { get; init; }
+
+            [JsonPropertyName("trace_path")]
+            public string? TracePath { get; init; }
+
+            [JsonPropertyName("trace_sha256")]
+            public string? TraceSha256 { get; init; }
+
             [JsonPropertyName("accepted")]
             public bool Accepted { get; init; }
 

@@ -500,6 +500,8 @@ def _audit_library(args: argparse.Namespace) -> int:
 
 
 def _runner_environment() -> dict[str, str]:
+    if os.name != "nt":
+        return dict(os.environ)
     # Some Windows hosts expose both `Path` and `PATH`. Deduplicate keys for
     # .NET's case-insensitive environment dictionary, but preserve the original
     # casing of every unrelated variable. Uppercasing the entire block can

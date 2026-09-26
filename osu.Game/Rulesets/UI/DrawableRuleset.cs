@@ -304,6 +304,19 @@ namespace osu.Game.Rulesets.UI
             void emitImportantFrame(JudgementResult judgementResult) => recordingInputManager.Recorder?.RecordFrame(true);
         }
 
+        /// <summary>Attach a private synthetic input timeline without creating a replay score.</summary>
+        public void SetResearchInputHandler(osu.Game.Input.Handlers.ReplayInputHandler handler)
+        {
+            if (!osu.Game.Research.ResearchBuild.Enabled || !Mods.Any(mod => mod is IResearchOnlyMod))
+                throw new InvalidOperationException("Synthetic input requires the isolated research build and research mod.");
+            if (ReplayScore != null)
+                throw new InvalidOperationException("Synthetic input cannot be mixed with replay playback.");
+            var inputManager = (IHasReplayHandler)KeyBindingInputManager;
+            inputManager.ReplayInputHandler = handler;
+            frameStabilityContainer.ReplayInputHandler = handler;
+            if (handler != null) handler.GamefieldToScreenSpace = Playfield.GamefieldToScreenSpace;
+        }
+
         public override void SetReplayScore(Score replayScore)
         {
             if (!(KeyBindingInputManager is IHasReplayHandler replayInputManager))

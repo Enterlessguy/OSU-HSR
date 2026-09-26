@@ -33,6 +33,11 @@ namespace osu.Desktop
         [STAThread]
         public static void Main(string[] args)
         {
+            if (osu.Game.Research.ResearchBuild.Enabled && args.Length == 1 && args[0] == "--verify-research-trace-input")
+            {
+                Console.WriteLine(osu.Game.Rulesets.Osu.Research.ResearchTraceInputHandler.VerifyContracts());
+                return;
+            }
             if (args.Length == 1 && args[0] == "--print-research-boundary")
             {
                 Console.WriteLine($"research={osu.Game.Research.ResearchBuild.Enabled};login={osu.Game.Research.ResearchBuild.AllowsLogin};submission={osu.Game.Research.ResearchBuild.AllowsScoreSubmission(Array.Empty<osu.Game.Rulesets.Mods.Mod>())}");

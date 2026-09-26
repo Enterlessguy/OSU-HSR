@@ -1,73 +1,93 @@
-# Arch Linux package preparation
+# Arch Linux installation and AUR preparation
 
-This directory contains an x86_64 `makepkg` recipe for the isolated HSR
-research build. It uses Arch's Python packages and an installed .NET 8 runtime;
-`package()` only stages files and does not install Python packages or access the
-network. The X11/XTest input backend is required for dispatch. Wayland and
-XWayland sessions are rejected. The framework's Linux run requirements call
-for system-wide FFmpeg [upstream requirement](https://github.com/ppy/osu-framework).
-The Microsoft [.NET support policy](https://dotnet.microsoft.com/en-us/platform/support/policy)
-lists .NET 8 end of support as 2026-11-10.
+HSR's Linux runner transfers a bounded, hashed synthetic timeline to its own
+research client. The client consumes each recorded cursor/key frame against
+the gameplay clock. This works independently of X11/Wayland global input APIs;
+it requires no root, input group, uinput driver or compositor automation access.
+Windows retains the existing guarded SendInput route.
 
-The application build also includes native BASS runtime binaries through the
-upstream framework dependency. NuGet license metadata is staged under the
-package license directory, but it does not establish redistribution rights for
-those binaries. The vendor's [BASS licensing terms](https://www.un4seen.com/bass.html)
-restrict redistribution/resale and separately describe non-commercial use.
-Resolve this licensing question before publishing a binary package to AUR.
+## Install locally
 
-## Current status
-
-The recipe is prepared for review but has not been built with `makepkg`, checked
-with `namcap`, tested on an Arch desktop, or published to the AUR. This host is
-Windows-only and has no Arch, WSL, container or `makepkg` runtime. The source
-revision in `PKGBUILD` is pinned to the reviewed compatibility-source commit;
-it will be fetchable by `makepkg` only after that source commit is explicitly
-authorized and made public. No AUR publication is part of this preparation.
-
-Linux X11 dispatch is also experimental. The Windows dispatch path remains the
-verified runtime; no live Arch gameplay or timing calibration is claimed.
-The BASS redistribution review is an additional publication gate.
-
-## Build and inspect on Arch
-
-After the pinned source revision is publicly available, build the package as an
-unprivileged user:
+On Arch Linux x86_64, install the build dependencies and build as a normal user:
 
 ```sh
-makepkg --cleanbuild
-makepkg --printsrcinfo > .SRCINFO.generated
-diff -u .SRCINFO .SRCINFO.generated
+sudo pacman -S --needed base-devel git dotnet-sdk-8.0 python-pytest
+git clone https://github.com/Enterlessguy/OSU-HSR.git
+cd OSU-HSR/packaging/arch
+makepkg --syncdeps --cleanbuild
 namcap PKGBUILD ./*.pkg.tar.zst
+sudo pacman -U ./*.pkg.tar.zst
+intelligence-database-hsr --diagnostics
 ```
 
-Inspect the package contents and install it locally in a disposable Arch user
-environment before release:
+The recipe's pinned compatibility revision must be public before these commands
+can fetch it. Until the reviewed changes are uploaded, use the local checkout
+validation described below. Do not run makepkg as root.
+
+## Run
 
 ```sh
-bsdtar -tf ./*.pkg.tar.zst
-sudo pacman -U ./*.pkg.tar.zst
+intelligence-database-hsr --skill 65 --effort 75
+intelligence-database-hsr --client-only
 ```
 
-Then verify the research-boundary diagnostic, map/exporter and replay-extractor
-wrappers, Python CLI, X11 backend preflight, Wayland rejection, and a synthetic
-offline run. Confirm all user data is written beneath XDG data/cache/state
-directories, and uninstall the package to verify owned files are removed.
+The first command launches the research client through its authenticated
+runner. Import your own maps, select an osu!standard difficulty and enable HSR.
+The second command opens only the isolated client for map import/settings;
+HSR gameplay still requires the runner. The desktop entry opens a terminal to
+keep progress and abort messages visible. Both X11 and Wayland use the same
+private timeline handler. The official client extension is not implemented.
 
-## Package layout
+User paths: maps in `$XDG_DATA_HOME/osu-development/files`, generated traces
+in `$XDG_CACHE_HOME/intelligence-database-hsr/auto`, logs in
+`$XDG_STATE_HOME/intelligence-database-hsr/logs`. Unset variables default to
+`~/.local/share`, `~/.cache`, and `~/.local/state`. Relative XDG values are ignored.
+Installed files beneath `/usr/lib/intelligence-database-hsr` are never writable
+application state. Removing the package preserves your user maps and logs.
 
-- `/usr/lib/intelligence-database-hsr` contains the research client, .NET tools,
-  Python source and pinned JSON model.
-- `/usr/bin/intelligence-database-hsr` starts the labeled profile launcher.
-- `/usr/bin/human-sim`, `/usr/bin/hsr-map-exporter` and
-  `/usr/bin/hsr-replay-extractor` expose the research tools.
-- The launcher opens in a terminal so runner logs and safety aborts remain
-  visible. The desktop entry does not hide the synthetic-research context.
+## Package contents and licensing
 
-## Maintenance
+The recipe publishes framework-dependent `linux-x64` output, installs the
+planner source and pinned v4 JSON model, and generates a NuGet license inventory.
+It uses Arch Python packages; `package()` stages files without network calls
+or system Python installation. Windows/macOS native outputs, test data,
+training corpora, local environments and generated traces are excluded.
 
-The package currently targets .NET 8 because that is the fork's project target.
-Microsoft support for .NET 8 ends 2026-11-10. Port the source, CI and package to
-a supported .NET runtime before that date. Review runtime dependencies and
-rebuild the package on each supported Arch update; do not claim the package is
-verified solely because its `PKGBUILD` parses.
+Project source is MIT. Native BASS audio libraries have separate vendor terms,
+including free non-commercial use and restrictions on resale/sublicensing.
+The complete application must not be advertised as having exclusively MIT
+dependencies. Commercial/advertising-supported distribution requires checking
+the applicable vendor licence. See [BASS terms](https://www.un4seen.com/bass.html)
+and the generated inventory. This is an end-user research application;
+it does not sublicense BASS for use in other applications.
+
+.NET 8 support ends 2026-11-10. A supported runtime migration must precede that
+date; this package currently follows the fork's net8.0 project targets.
+
+## Verification and AUR upload checklist
+
+The workflow tests Windows and Linux source plus an unprivileged Arch package
+build/install. Diagnostics exercise the actual timeline handler at 0.75x,
+1x and 1.5x, exact key edges, stalled updates, duplicate accounting and
+backward-clock aborts. Transport checks cover hashes, token/map/rate, malformed
+frames and mandatory learned exposure. These do not measure Windows OS input
+latency or substitute for playing through representative maps on your desktop.
+
+Before uploading to AUR:
+
+1. Publish the reviewed source commit and pin that exact commit in PKGBUILD.
+2. Run `makepkg --printsrcinfo > .SRCINFO` and review both files together.
+3. Complete `makepkg --cleanbuild`, namcap, installation, diagnostics and
+   uninstall checks in a clean Arch environment. Record logs and SHA-256.
+4. Exercise maps with circles, sliders, spinners, breaks, DT/HT, focus loss,
+   pause/quit, resize/scale changes, missing models and interrupted IPC on X11
+   and Wayland. Retain the full fallback/delivered-frame counters.
+5. Confirm the application remains a free/non-commercial end-user distribution
+   under its native-library terms. No raw player/map data belongs in the package.
+6. Create an AUR account and SSH key, check the name is available, clone
+   `ssh://aur@aur.archlinux.org/intelligence-database-hsr.git`, copy PKGBUILD and
+   .SRCINFO, inspect the staged diff, commit, and push after approval.
+
+AUR holds build recipes, not prebuilt binaries. The recipe fetches the pinned
+source; its launchers and license helper are part of that source. Only PKGBUILD
+and .SRCINFO need to be uploaded. AUR publication is a separate authorized step.

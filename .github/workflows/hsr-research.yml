@@ -34,6 +34,8 @@ jobs:
           if ($boundary -ne 'research=True;login=False;submission=False') { throw 'Research boundary disabled' }
           dotnet 'osu.Desktop/bin/Release/net8.0/osu!.dll' --verify-research-mapping-depth
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          dotnet 'osu.Desktop/bin/Release/net8.0/osu!.dll' --verify-research-trace-input
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
   linux:
     runs-on: ubuntu-latest
@@ -70,13 +72,11 @@ jobs:
           boundary=$(dotnet 'osu.Desktop/bin/Release/net8.0/osu!.dll' --print-research-boundary)
           test "$boundary" = 'research=True;login=False;submission=False'
           dotnet 'osu.Desktop/bin/Release/net8.0/osu!.dll' --verify-research-mapping-depth
-      - name: Smoke X11 backend and Wayland rejection
+      - name: Verify private trace delivery for X11 and Wayland
         run: |
-          env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 xvfb-run -a dotnet research/HumanSim.Runner/bin/Release/net8.0/HumanSim.Runner.dll --verify-input-backend
-          if XDG_SESSION_TYPE=wayland WAYLAND_DISPLAY=wayland-0 DISPLAY=:99 dotnet research/HumanSim.Runner/bin/Release/net8.0/HumanSim.Runner.dll --verify-input-backend; then
-            echo 'Wayland was unexpectedly accepted.' >&2
-            exit 1
-          fi
+          dotnet 'osu.Desktop/bin/Release/net8.0/osu!.dll' --verify-research-trace-input
+          XDG_SESSION_TYPE=x11 dotnet research/HumanSim.Runner/bin/Release/net8.0/HumanSim.Runner.dll --verify-input-backend
+          XDG_SESSION_TYPE=wayland WAYLAND_DISPLAY=wayland-0 dotnet research/HumanSim.Runner/bin/Release/net8.0/HumanSim.Runner.dll --verify-input-backend
 
   arch-package:
     runs-on: ubuntu-latest
@@ -88,13 +88,25 @@ jobs:
       - name: Install Arch build and runtime dependencies
         run: |
           pacman -Syu --noconfirm
-          pacman -S --needed --noconfirm base-devel dotnet-sdk-8.0 git namcap xdotool ffmpeg alsa-lib fontconfig freetype2 libglvnd libpng libx11 libxcursor libxi libxinerama libxrandr libxss libxtst libxkbcommon libpulse zlib python python-matplotlib python-numpy python-pandas python-pillow python-pyarrow python-polars python-scikit-learn python-scipy python-pydantic
+          pacman -S --needed --noconfirm base-devel dotnet-sdk-8.0 git namcap ffmpeg alsa-lib fontconfig freetype2 libglvnd libpng libx11 libxcursor libxi libxinerama libxrandr libxss libxkbcommon libpulse zlib python python-pytest python-matplotlib python-numpy python-pandas python-pillow python-pyarrow python-polars python-scikit-learn python-scipy python-pydantic python-joblib
           useradd --create-home builder
           mkdir -p /tmp/hsr-aur
           cp packaging/arch/PKGBUILD packaging/arch/.SRCINFO packaging/arch/collect-nuget-licenses.py packaging/arch/human-sim-wrapper packaging/arch/hsr-launcher packaging/arch/hsr-map-exporter packaging/arch/hsr-replay-extractor packaging/arch/intelligence-database-hsr.desktop /tmp/hsr-aur/
           chown -R builder:builder /tmp/hsr-aur
       - name: Build and inspect the package as an unprivileged user
         run: |
-          runuser -u builder -- bash -lc 'cd /tmp/hsr-aur && makepkg --noconfirm --cleanbuild'
           runuser -u builder -- bash -lc 'cd /tmp/hsr-aur && makepkg --printsrcinfo | diff -u .SRCINFO -'
+          # Validate this exact checkout even before its release pin is published.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          runuser -u builder -- git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          sed -i "s@https://github.com/Enterlessguy/OSU-HSR.git#commit=[a-f0-9]*@file://$GITHUB_WORKSPACE#commit=$GITHUB_SHA@" /tmp/hsr-aur/PKGBUILD
+          runuser -u builder -- bash -lc 'cd /tmp/hsr-aur && makepkg --noconfirm --cleanbuild'
           runuser -u builder -- bash -lc 'cd /tmp/hsr-aur && namcap PKGBUILD *.pkg.tar.zst'
+          pacman -U --noconfirm /tmp/hsr-aur/*.pkg.tar.zst
+          runuser -u builder -- intelligence-database-hsr --diagnostics
+          runuser -u builder -- hsr-map-exporter --help
+          runuser -u builder -- hsr-replay-extractor --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: intelligence-database-hsr-arch-x86_64
+          path: /tmp/hsr-aur/*.pkg.tar.zst

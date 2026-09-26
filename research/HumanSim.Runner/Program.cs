@@ -8,6 +8,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using HumanSim.Transport;
 
 namespace HumanSim.Runner;
 
@@ -38,9 +39,7 @@ internal static class Program
                     Console.WriteLine("backend=windows-sendinput;research-build-only=true");
                 else if (OperatingSystem.IsLinux())
                 {
-                    X11Input.Initialize();
-                    Console.WriteLine("backend=x11-xtest;wayland=unsupported;privileged-device-access=false");
-                    X11Input.Dispose();
+                    Console.WriteLine("backend=research-client;display=x11-or-wayland;global-input=false;privileged-device-access=false");
                 }
                 else
                     throw new PlatformNotSupportedException("The HSR runner supports Windows and X11 desktop sessions on Linux.");
@@ -49,7 +48,6 @@ internal static class Program
             catch (Exception exception)
             {
                 Console.Error.WriteLine(exception.Message);
-                X11Input.Dispose();
                 return 1;
             }
         }
@@ -58,9 +56,8 @@ internal static class Program
         {
             Options options = Options.Parse(args);
             int verifyIndex = Array.IndexOf(args, "--verify-plan");
-            if (OperatingSystem.IsLinux() && !options.TimingOnly && verifyIndex < 0)
-                X11Input.Initialize();
-            else if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+            bool clientPlayback = OperatingSystem.IsLinux() && !options.TimingOnly;
+            if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
                 throw new PlatformNotSupportedException("The HSR runner supports Windows and X11 desktop sessions on Linux.");
             if (verifyIndex >= 0)
             {
@@ -101,6 +98,7 @@ internal static class Program
                     ["HUMAN_SIM_PIPE"] = pipeName,
                     ["HUMAN_SIM_RUN_TOKEN"] = token,
                     ["HUMAN_SIM_SELECTION_PIPE"] = selectionPipeName,
+                    ["HUMAN_SIM_INPUT_BACKEND"] = clientPlayback ? "research-client" : "windows-sendinput",
                 },
             }) ?? throw new InvalidOperationException("Research client did not start.");
 
@@ -148,6 +146,7 @@ internal static class Program
                     using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(options.TimeoutSeconds));
                     StreamReader? reader = null;
                     StreamWriter? writer = null;
+                    string? payloadPath = null;
                     try
                     {
                         reader = new StreamReader(pipe, leaveOpen: true);
@@ -173,7 +172,30 @@ internal static class Program
                         rejection = "no trace was supplied or generated";
                     if (rejection == null)
                         rejection = validateTrace(hello, trace!.Header);
-                    await writer.WriteLineAsync(JsonSerializer.Serialize(new Acknowledgement(rejection == null, token, rejection))).ConfigureAwait(false);
+                    string? payloadHash = null;
+                    if (rejection == null && clientPlayback)
+                    {
+                        payloadPath = Path.Combine(Path.GetTempPath(), $"hsr-trace-{Guid.NewGuid():N}.json.gz");
+                        var payload = new ResearchTraceData
+                        {
+                            RunToken = token, BeatmapSha256 = hello.BeatmapSha256, ClockRate = hello.ClockRate,
+                            TimelineStartEffectiveMs = trace!.Header.TimelineStartEffectiveMs,
+                            ExecutionMode = trace.Header.ExecutionMode,
+                            LearnedSegments = trace.Header.ExecutionLearnedSegmentCount,
+                            ChangedSamples = trace.Header.ExecutionChangedSampleCount,
+                            FallbackSegments = trace.Header.ExecutionFallbackSegmentCount,
+                            Frames = trace.Frames.Select(frame => new ResearchTraceFrame
+                            { TimeUs = frame.TimeUs, X = frame.X, Y = frame.Y, K1 = frame.K1, K2 = frame.K2 }).ToList(),
+                        };
+                        payload.Validate(token, hello.BeatmapSha256, hello.ClockRate);
+                        payloadHash = payload.Write(payloadPath);
+                    }
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new
+                    {
+                        accepted = rejection == null, run_token = token, reason = rejection,
+                        input_backend = clientPlayback ? "research-client" : "windows-sendinput",
+                        trace_path = payloadPath, trace_sha256 = payloadHash,
+                    })).ConfigureAwait(false);
                     if (rejection != null)
                     {
                         Console.WriteLine($"Research client rejected: {rejection}");
@@ -196,11 +218,9 @@ internal static class Program
                     process.Refresh();
                     nint window = 0;
                     WindowGuard guard = default;
-                    if (!options.TimingOnly)
+                    if (!options.TimingOnly && !clientPlayback)
                     {
-                        window = OperatingSystem.IsWindows()
-                            ? process.MainWindowHandle
-                            : X11Input.FindWindow(process.Id);
+                        window = process.MainWindowHandle;
                         if (window == 0) throw new InvalidOperationException("Research client has no main window.");
                         ensureForeground(process.Id);
                         guard = WindowGuard.Capture(window, process.Id);
@@ -211,10 +231,13 @@ internal static class Program
                     }
                     var connection = new ConnectionMonitor(reader, token, start, !options.DisableClockFit);
                     var transformHolder = new TransformHolder(PlayfieldTransform.FromStart(start));
-                    connection.AttachTransform(transformHolder, guard, options.TimingOnly);
+                    connection.AttachTransform(transformHolder, guard, options.TimingOnly || clientPlayback);
                     connection.Start();
                     Console.WriteLine($"Gameplay clock at launch: {start.GameplayClockTimeMs:F3} effective ms at {hello.ClockRate:F3}x; trace timeline starts at {selectedTrace.Header.TimelineStartEffectiveMs:F3} ms.");
-                    execute(selectedTrace, hello, start, process, window, guard, options, connection, transformHolder);
+                    if (clientPlayback)
+                        await monitorClientPlayback(selectedTrace, process, connection).ConfigureAwait(false);
+                    else
+                        execute(selectedTrace, hello, start, process, window, guard, options, connection, transformHolder);
                     // Best-effort completion notification. If the client has
                     // already dropped the connection (user quit, map ended,
                     // harness closed), a completed run must not fail.
@@ -241,6 +264,7 @@ internal static class Program
                     }
                     finally
                     {
+                        if (payloadPath != null) File.Delete(payloadPath);
                         try { writer?.Dispose(); } catch (IOException) { }
                         try { reader?.Dispose(); } catch (IOException) { }
                     }
@@ -279,7 +303,6 @@ internal static class Program
         finally
         {
             Input.ReleaseAllKeys();
-            X11Input.Dispose();
             logWriter?.Dispose();
         }
     }
@@ -294,6 +317,35 @@ internal static class Program
         if (h.QpcFrequency != Stopwatch.Frequency) return "high-resolution clock mismatch";
         if (h.PlayfieldOrigin.Length != 2 || h.PlayfieldXAxis.Length != 2 || h.PlayfieldYAxis.Length != 2) return "invalid playfield transform";
         return null;
+    }
+
+    private static async Task monitorClientPlayback(Trace trace, Process process, ConnectionMonitor connection)
+    {
+        Console.WriteLine($"Research client playback: {trace.Frames.Count} frames; learned segments={trace.Header.ExecutionLearnedSegmentCount}; changed samples={trace.Header.ExecutionChangedSampleCount}; fallback segments={trace.Header.ExecutionFallbackSegmentCount}.");
+        long started = Stopwatch.GetTimestamp();
+        double maximumSeconds = trace.Frames[^1].TimeUs / 1_000_000.0 + 120;
+        while (!connection.ClientPlaybackComplete)
+        {
+            if (process.HasExited) throw new InvalidOperationException("Research client exited during synthetic playback.");
+            connection.EnsureAlive();
+            if (Stopwatch.GetElapsedTime(started).TotalSeconds > maximumSeconds)
+                throw new TimeoutException("Research client did not finish the synthetic trace.");
+            await Task.Delay(10).ConfigureAwait(false);
+        }
+        if (connection.ClientExpectedFrames != trace.Frames.Count || connection.ClientConsumedFrames != trace.Frames.Count)
+            throw new InvalidDataException("Research client skipped trace frames; delivery parity failed.");
+        Console.WriteLine($"Runtime telemetry: {JsonSerializer.Serialize(new
+        {
+            schema_version = 1, kind = "runtime_telemetry", status = "completed", timing_only = false,
+            input_backend = "research-client", planned_frames = trace.Frames.Count,
+            client_consumed_frames = connection.ClientConsumedFrames, delivered_frames = connection.ClientConsumedFrames,
+            learned_segment_count = trace.Header.ExecutionLearnedSegmentCount,
+            changed_sample_count = trace.Header.ExecutionChangedSampleCount,
+            fallback_segment_count = trace.Header.ExecutionFallbackSegmentCount,
+            heartbeat_count = connection.HeartbeatCount,
+            heartbeat_max_gap_ms = connection.HeartbeatMaxGapMs,
+            delivery_clock = "gameplay-frame-stability", os_dispatch_calibrated = false,
+        })}");
     }
 
     private static string? validateTrace(Handshake h, TraceHeader t)
@@ -954,9 +1006,7 @@ internal static class Program
         }
         else
         {
-            nint foreground = X11Input.GetForegroundWindow();
-            if (foreground == 0 || X11Input.GetWindowProcessId(foreground) != processId)
-                throw new InvalidOperationException("Research client lost focus; run aborted.");
+            throw new PlatformNotSupportedException("Global input guards apply only to Windows; Linux uses private client playback.");
         }
     }
 
@@ -1114,6 +1164,12 @@ internal sealed class TransformHolder
 
 internal sealed class ConnectionMonitor
 {
+    public bool ClientPlaybackComplete => Volatile.Read(ref clientPlaybackComplete);
+    public int ClientConsumedFrames => Volatile.Read(ref clientConsumedFrames);
+    public int ClientExpectedFrames => Volatile.Read(ref clientExpectedFrames);
+    private bool clientPlaybackComplete;
+    private int clientConsumedFrames;
+    private int clientExpectedFrames;
     private const int max_samples = 128;
     private const int min_fit_samples = 8;
 
@@ -1190,6 +1246,16 @@ internal sealed class ConnectionMonitor
 
                 if (kind != "heartbeat")
                     throw new InvalidDataException("Malformed research message.");
+                if (message.RootElement.TryGetProperty("client_consumed_frames", out JsonElement consumed))
+                {
+                    int count = consumed.GetInt32();
+                    int expected = message.RootElement.GetProperty("client_expected_frames").GetInt32();
+                    if (count < ClientConsumedFrames || count > expected || expected < 0 || expected > ResearchTraceData.MaximumFrames)
+                        throw new InvalidDataException("Invalid research client frame counters.");
+                    Volatile.Write(ref clientConsumedFrames, count);
+                    Volatile.Write(ref clientExpectedFrames, expected);
+                    Volatile.Write(ref clientPlaybackComplete, message.RootElement.GetProperty("client_playback_complete").GetBoolean());
+                }
                 long qpc = message.RootElement.GetProperty("qpc").GetInt64();
                 double clockTime = message.RootElement.GetProperty("gameplay_clock_time_ms").GetDouble();
                 if (qpc <= 0 || !double.IsFinite(clockTime))
@@ -1591,6 +1657,7 @@ internal sealed class TraceHeader
     [JsonPropertyName("execution_fallback")] public bool ExecutionFallback { get; init; }
     [JsonPropertyName("execution_learned_segment_count")] public int ExecutionLearnedSegmentCount { get; init; }
     [JsonPropertyName("execution_changed_sample_count")] public int ExecutionChangedSampleCount { get; init; }
+    [JsonPropertyName("execution_fallback_segment_count")] public int ExecutionFallbackSegmentCount { get; init; }
     [JsonPropertyName("planner_version")] public string PlannerVersion { get; init; } = "";
     [JsonPropertyName("git_commit")] public string GitCommit { get; init; } = "";
     [JsonPropertyName("build_identity")] public string BuildIdentity { get; init; } = "";
@@ -1704,8 +1771,7 @@ internal readonly record struct WindowGuard(Native.RECT Rect, Native.RECT Client
             return new WindowGuard(rect, clientRect, virtualScreen, Native.GetDpiForWindow(window), processId);
         }
 
-        Native.RECT x11Rect = X11Input.GetWindowRect(window);
-        return new WindowGuard(x11Rect, x11Rect, X11Input.GetVirtualScreenRect(), 96, processId);
+        throw new PlatformNotSupportedException("Global window guards apply only to Windows.");
     }
 
     public void Validate(nint window)
@@ -1721,9 +1787,7 @@ internal readonly record struct WindowGuard(Native.RECT Rect, Native.RECT Client
         }
         else
         {
-            if (X11Input.GetWindowProcessId(window) != ProcessId) throw new InvalidOperationException("Research window ownership changed; run aborted.");
-            if (X11Input.GetWindowRect(window) != Rect) throw new InvalidOperationException("Research window moved or resized; run aborted.");
-            if (X11Input.GetVirtualScreenRect() != VirtualScreen) throw new InvalidOperationException("Virtual screen size or layout changed; run aborted.");
+            throw new PlatformNotSupportedException("Global window guards apply only to Windows.");
         }
     }
 
@@ -1763,19 +1827,14 @@ internal static class Input
 {
     private static readonly HashSet<ushort> heldKeys = new();
     private static readonly Native.INPUT[] frameEvents = new Native.INPUT[3];
-    public static string BackendId => OperatingSystem.IsWindows() ? "windows-sendinput" : "x11-xtest";
-    public static string BackendName => OperatingSystem.IsWindows() ? "SendInput" : "X11 XTest";
+    public static string BackendId => OperatingSystem.IsWindows() ? "windows-sendinput" : "timing-only";
+    public static string BackendName => OperatingSystem.IsWindows() ? "SendInput" : "timing-only";
 
     public static void SendFrame(double x, double y, bool targetK1, bool targetK2, ref bool k1, ref bool k2, ushort leftKey, ushort rightKey)
     {
         if (!OperatingSystem.IsWindows())
         {
-            if (targetK1 && !k1) heldKeys.Add(leftKey);
-            if (targetK2 && !k2) heldKeys.Add(rightKey);
-            X11Input.SendFrame((int)Math.Round(x), (int)Math.Round(y), targetK1, targetK2, k1, k2, leftKey, rightKey);
-            if (targetK1 != k1) { track(leftKey, targetK1); k1 = targetK1; }
-            if (targetK2 != k2) { track(rightKey, targetK2); k2 = targetK2; }
-            return;
+            throw new PlatformNotSupportedException("Linux input must remain confined to the research client.");
         }
 
         // SendInput inserts this array serially and without interleaving. Keeping
@@ -1812,7 +1871,7 @@ internal static class Input
     {
         if (!heldKeys.Remove(virtualKey)) return;
         if (OperatingSystem.IsWindows()) send(new[] { Native.Key(virtualKey, true) }, 1);
-        else X11Input.SendKey(virtualKey, false);
+        else throw new PlatformNotSupportedException("No global Linux key backend exists.");
     }
 
     public static void ReleaseAllKeys()
@@ -1822,7 +1881,6 @@ internal static class Input
             try
             {
                 if (OperatingSystem.IsWindows()) send(new[] { Native.Key(key, true) }, 1);
-                else X11Input.SendKey(key, false);
             }
             catch { }
             heldKeys.Remove(key);
@@ -1939,201 +1997,4 @@ internal static class Native
         public int Height => Bottom - Top;
         public double AspectRatio => Width / (double)Math.Max(1, Height);
     }
-}
-
-/// <summary>
-/// Unprivileged X11 input support. Wayland sessions are deliberately rejected:
-/// an Xwayland window cannot reliably observe compositor focus or geometry changes.
-/// </summary>
-internal static class X11Input
-{
-    private const int current_screen = -1;
-    private static nint display;
-    private static readonly Dictionary<ushort, byte> keyCodes = new();
-
-    public static void Initialize()
-    {
-        string sessionType = Environment.GetEnvironmentVariable("XDG_SESSION_TYPE") ?? string.Empty;
-        if (sessionType.Equals("wayland", StringComparison.OrdinalIgnoreCase)
-            || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY")))
-            throw new PlatformNotSupportedException("HSR input dispatch currently supports X11 sessions only; Wayland is rejected to preserve focus and target-window checks.");
-        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")))
-            throw new InvalidOperationException("No X11 DISPLAY is available. Start an X11 desktop session to use the HSR runner.");
-
-        display = XOpenDisplay(nint.Zero);
-        if (display == nint.Zero)
-            throw new InvalidOperationException("Could not open the current X11 display. Install libX11 and libXtst and check DISPLAY access.");
-        if (XTestQueryExtension(display, out _, out _, out _, out _) == 0)
-            throw new InvalidOperationException("The X11 server does not provide the XTest extension required by the unprivileged input backend.");
-        bool xdotoolAvailable = (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
-            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
-            .Any(directory => File.Exists(Path.Combine(directory, "xdotool")));
-        if (!xdotoolAvailable)
-            throw new InvalidOperationException("xdotool is required for X11 window identity, focus, and geometry checks.");
-    }
-
-    public static nint FindWindow(int processId)
-    {
-        string[] matches = RunXdotool("search", "--onlyvisible", "--pid", processId.ToString(CultureInfo.InvariantCulture))
-            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        long[] windows = matches.Select(parseWindowId).Distinct().ToArray();
-        if (windows.Length == 0)
-            throw new InvalidOperationException("No visible X11 window belongs to the launched research client.");
-        if (windows.Length == 1)
-            return new nint(windows[0]);
-
-        long active = parseWindowId(RunXdotool("getactivewindow").Trim());
-        if (windows.Contains(active))
-            return new nint(active);
-        throw new InvalidOperationException("The research client owns multiple visible X11 windows and none is focused; target selection is ambiguous.");
-    }
-
-    public static nint GetForegroundWindow()
-        => new(parseWindowId(RunXdotool("getactivewindow").Trim()));
-
-    public static int GetWindowProcessId(nint window)
-    {
-        string output = RunXdotool("getwindowpid", formatWindowId(window)).Trim();
-        if (!int.TryParse(output, NumberStyles.None, CultureInfo.InvariantCulture, out int processId) || processId <= 0)
-            throw new InvalidOperationException("X11 did not report a valid process owner for the research window.");
-        return processId;
-    }
-
-    public static Native.RECT GetWindowRect(nint window)
-    {
-        string output = RunXdotool("getwindowgeometry", "--shell", formatWindowId(window));
-        var geometry = new Dictionary<string, int>(StringComparer.Ordinal);
-        foreach (string line in output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
-        {
-            int separator = line.IndexOf('=');
-            if (separator > 0 && int.TryParse(line.AsSpan(separator + 1), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
-                geometry[line[..separator]] = value;
-        }
-
-        if (!geometry.TryGetValue("X", out int x) || !geometry.TryGetValue("Y", out int y)
-            || !geometry.TryGetValue("WIDTH", out int width) || !geometry.TryGetValue("HEIGHT", out int height)
-            || width <= 0 || height <= 0)
-            throw new InvalidOperationException("Could not read the X11 research-window geometry.");
-
-        return new Native.RECT(x, y, x + width, y + height);
-    }
-
-    public static Native.RECT GetVirtualScreenRect()
-    {
-        EnsureInitialized();
-        int screen = XDefaultScreen(display);
-        int width = XDisplayWidth(display, screen);
-        int height = XDisplayHeight(display, screen);
-        if (width <= 0 || height <= 0)
-            throw new InvalidOperationException("X11 reported invalid virtual-screen dimensions.");
-        return new Native.RECT(0, 0, width, height);
-    }
-
-    public static void SendFrame(int x, int y, bool k1, bool k2, bool previousK1, bool previousK2, ushort leftKey, ushort rightKey)
-    {
-        EnsureInitialized();
-        if (XTestFakeMotionEvent(display, current_screen, x, y, 0) == 0)
-            throw new InvalidOperationException("XTest could not dispatch pointer movement; run aborted.");
-        if (k1 != previousK1 && XTestFakeKeyEvent(display, getKeyCode(leftKey), k1 ? 1 : 0, 0) == 0)
-            throw new InvalidOperationException("XTest could not dispatch the first key press; run aborted.");
-        if (k2 != previousK2 && XTestFakeKeyEvent(display, getKeyCode(rightKey), k2 ? 1 : 0, 0) == 0)
-            throw new InvalidOperationException("XTest could not dispatch the second key press; run aborted.");
-        XFlush(display);
-    }
-
-    public static void SendKey(ushort key, bool down)
-    {
-        EnsureInitialized();
-        if (XTestFakeKeyEvent(display, getKeyCode(key), down ? 1 : 0, 0) == 0)
-            throw new InvalidOperationException("XTest could not release a held key.");
-        XFlush(display);
-    }
-
-    public static void Dispose()
-    {
-        if (display == nint.Zero)
-            return;
-        XCloseDisplay(display);
-        display = nint.Zero;
-        keyCodes.Clear();
-    }
-
-    private static byte getKeyCode(ushort key)
-    {
-        if (keyCodes.TryGetValue(key, out byte keyCode))
-            return keyCode;
-
-        string keyName = char.ToUpperInvariant((char)key).ToString();
-        nuint keySym = XStringToKeysym(keyName);
-        keyCode = XKeysymToKeycode(display, keySym);
-        if (keyCode == 0)
-            throw new InvalidDataException($"X11 has no key mapping for {keyName}.");
-        keyCodes[key] = keyCode;
-        return keyCode;
-    }
-
-    private static string RunXdotool(params string[] arguments)
-    {
-        var startInfo = new ProcessStartInfo("xdotool")
-        {
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
-        foreach (string argument in arguments)
-            startInfo.ArgumentList.Add(argument);
-        using Process process = Process.Start(startInfo) ?? throw new InvalidOperationException("Could not start xdotool.");
-        Task<string> stdout = process.StandardOutput.ReadToEndAsync();
-        Task<string> stderr = process.StandardError.ReadToEndAsync();
-        if (!process.WaitForExit(2000))
-        {
-            process.Kill(entireProcessTree: true);
-            throw new TimeoutException("xdotool did not respond within two seconds.");
-        }
-        string result = stdout.GetAwaiter().GetResult();
-        string error = stderr.GetAwaiter().GetResult();
-        if (process.ExitCode != 0)
-            throw new InvalidOperationException($"xdotool failed: {error.Trim()}");
-        return result;
-    }
-
-    private static long parseWindowId(string value)
-    {
-        value = value.Trim();
-        if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-            return Convert.ToInt64(value[2..], 16);
-        return long.Parse(value, NumberStyles.None, CultureInfo.InvariantCulture);
-    }
-
-    private static string formatWindowId(nint window) => $"0x{window.ToInt64():x}";
-
-    private static void EnsureInitialized()
-    {
-        if (display == nint.Zero)
-            throw new InvalidOperationException("X11 dispatch was not initialized.");
-    }
-
-    [DllImport("libX11.so.6", EntryPoint = "XOpenDisplay")]
-    private static extern nint XOpenDisplay(nint displayName);
-    [DllImport("libX11.so.6", EntryPoint = "XCloseDisplay")]
-    private static extern int XCloseDisplay(nint display);
-    [DllImport("libX11.so.6", EntryPoint = "XDefaultScreen")]
-    private static extern int XDefaultScreen(nint display);
-    [DllImport("libX11.so.6", EntryPoint = "XDisplayWidth")]
-    private static extern int XDisplayWidth(nint display, int screenNumber);
-    [DllImport("libX11.so.6", EntryPoint = "XDisplayHeight")]
-    private static extern int XDisplayHeight(nint display, int screenNumber);
-    [DllImport("libX11.so.6", EntryPoint = "XStringToKeysym", CharSet = CharSet.Ansi)]
-    private static extern nuint XStringToKeysym(string keyName);
-    [DllImport("libX11.so.6", EntryPoint = "XKeysymToKeycode")]
-    private static extern byte XKeysymToKeycode(nint display, nuint keySym);
-    [DllImport("libX11.so.6", EntryPoint = "XFlush")]
-    private static extern int XFlush(nint display);
-    [DllImport("libXtst.so.6", EntryPoint = "XTestFakeMotionEvent")]
-    private static extern int XTestFakeMotionEvent(nint display, int screenNumber, int x, int y, nuint delay);
-    [DllImport("libXtst.so.6", EntryPoint = "XTestQueryExtension")]
-    private static extern int XTestQueryExtension(nint display, out int eventBase, out int errorBase, out int majorVersion, out int minorVersion);
-    [DllImport("libXtst.so.6", EntryPoint = "XTestFakeKeyEvent")]
-    private static extern int XTestFakeKeyEvent(nint display, uint keyCode, int isPress, nuint delay);
 }

@@ -3,7 +3,7 @@
 HSR (Human Simulator Research) is an offline research fork of osu!lazer for
 generating and replaying deterministic, visibly synthetic osu!standard input
 traces. This checkpoint contains the second-generation mathematical planner,
-guarded Windows runner (with experimental X11 dispatch on Arch Linux), replay
+guarded Windows runner and private Linux client playback, replay
 research pipeline, and cross-map validation tooling.
 
 > [!IMPORTANT]
@@ -59,7 +59,7 @@ See [release notes](research/RELEASE_NOTES.md),
 
 - **Bundled build:** implemented osu!lazer research fork with HSR preinstalled,
   login/submission disabled and the Intelligence Database watermark. Windows
-  remains the verified dispatch platform; an Arch Linux X11 path and PKGBUILD
+  remains the verified OS dispatch platform; a Linux client timeline and PKGBUILD
   are prepared but have not yet been verified by an Arch build or live run.
 - **Official-client extension:** a custom ruleset is a feasibility direction;
   an arbitrary Mod DLL is not supported by the official loader. No extension
@@ -80,7 +80,7 @@ Python mathematical planner ----> synthetic trace + hash-bound manifest
 HumanSim.Runner <---- authenticated named-pipe handshake ----> HSR client mod
     |
     v
-Windows SendInput or Linux X11/XTest, guarded by process/window/focus/map checks
+Windows SendInput or Linux private client input, guarded by process/focus/map checks
 ```
 
 ### Components
@@ -92,7 +92,7 @@ Windows SendInput or Linux X11/XTest, guarded by process/window/focus/map checks
 - `research/human-sim` contains planning, trace validation, corpus extraction,
   model fitting, evaluation, and library-audit commands.
 - `research/HumanSim.Runner` validates and dispatches traces through ordinary
-  Windows input or experimental unprivileged X11/XTest while monitoring focus,
+  Windows input or an authenticated private Linux timeline while monitoring focus,
   clock drift, transforms, and process identity.
 - `research/HumanSim.ReplayExtractor` decodes local `.osr` research captures
   and hashes player identity with a private salt.
@@ -102,8 +102,7 @@ See `HANDOFF.md` for detailed implementation history and
 
 ## Requirements
 
-- Windows 10 or newer (verified dispatch platform), or Arch Linux x86_64 with
-  an X11 desktop session (experimental; Wayland is rejected).
+- Windows 10 or newer, or Arch Linux x86_64 with an X11 or Wayland desktop.
 - PowerShell 7 recommended.
 - Python 3.12 or newer.
 - .NET 8 SDK (8.0.425 / runtime 8.0.31 verified locally); Arch package prep
@@ -112,11 +111,12 @@ See `HANDOFF.md` for detailed implementation history and
 - A local osu! beatmap library for automatic map selection and live research
   runs.
 
-Linux input requires X11, the XTest extension, `xdotool`, and a visible,
-focused research-client window. Wayland and XWayland sessions are deliberately
-rejected. X11 dispatch is not yet calibrated or verified in a live gameplay
-run. Package files are staged in `packaging/arch/`; the AUR package has not
-been published. See [Arch package preparation](packaging/arch/README.md).
+Linux input is confined to the focused research client. It consumes the
+validated synthetic trace against the gameplay clock, with exact key edges
+and explicit consumed-frame/learned/fallback counters. It does not use XTest,
+xdotool, root or input-device permissions. Windows OS latency measurements
+do not apply to this different delivery route. The AUR package has not been
+published. See [Linux and Arch instructions](packaging/arch/README.md).
 
 Do not commit local beatmaps, replay exports, credentials, raw player data,
 generated traces, or trained binary models.
@@ -156,7 +156,7 @@ prompts for skill and effort, then starts the guarded automatic-planning runner:
 
 On Arch Linux, see [packaging instructions](packaging/arch/README.md) for the
 local `makepkg` and review workflow. Do not treat that package as a verified
-release until its Arch CI and live X11 checks pass.
+release until its Arch CI and representative desktop checks pass.
 
 Alternatively, after building:
 

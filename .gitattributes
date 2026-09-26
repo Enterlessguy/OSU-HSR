@@ -27,3 +27,7 @@ App.config text eol=crlf
 research/human-sim/models/**/*.json text eol=lf
 
 research/human-sim/benchmarks/*.json text eol=lf
+packaging/arch/PKGBUILD text eol=lf
+packaging/arch/.SRCINFO text eol=lf
+packaging/arch/hsr-* text eol=lf
+packaging/arch/human-sim-wrapper text eol=lf

@@ -55,10 +55,12 @@ only the bundled build is currently implemented.
 ### Arch Linux package preparation
 
 `packaging/arch/` contains an x86_64 PKGBUILD and launcher files. The package
-targets X11 desktops, stages runtime files under `/usr/lib`, uses Arch's
+targets X11 and Wayland desktops through private client input, stages Linux
+runtime files under `/usr/lib`, uses Arch's
 Python packages without network installs during `package()`, and keeps user
-data under XDG directories. It has not been built in an Arch environment or
-published to the AUR. See [the package review procedure](../packaging/arch/README.md).
+data under XDG directories. It is not published to the AUR. See
+[installation and package review](../packaging/arch/README.md) for verification
+and upload gates.
 
 The build targets .NET 8. Microsoft support for .NET 8 ends 2026-11-10; the
 package must move to a supported runtime before then.
