@@ -12,7 +12,10 @@ cleanup() {
     local status=$?
     if [[ -n "$compositor_pid" ]]; then kill "$compositor_pid" 2>/dev/null || true; wait "$compositor_pid" 2>/dev/null || true; fi
     if [[ "$status" != 0 ]]; then
-        for log in "$state/x11.log" "$state/wayland.log" "$state/weston.log"; do [[ ! -f "$log" ]] || tail -100 "$log" >&2; done
+        while IFS= read -r -d '' log; do
+            printf '\nLog: %s\n' "$log" >&2
+            tail -100 "$log" >&2
+        done < <(find "$state" -type f -name '*.log' -print0)
     fi
     printf 'Desktop check logs: %s\n' "$state"
 }
@@ -37,7 +40,7 @@ for _ in $(seq 1 100); do
     sleep 0.1
 done
 [[ -S "$XDG_RUNTIME_DIR/hsr-smoke-wayland" ]] || { cat "$state/weston.log" >&2; exit 1; }
-env -u DISPLAY XDG_SESSION_TYPE=wayland WAYLAND_DISPLAY=hsr-smoke-wayland SDL_VIDEODRIVER=wayland \
+env -u DISPLAY XDG_SESSION_TYPE=wayland WAYLAND_DISPLAY=hsr-smoke-wayland SDL_VIDEO_DRIVER=wayland SDL_VIDEODRIVER=wayland WAYLAND_DEBUG=1 \
     timeout 90s dotnet "$client" --verify-research-host > "$state/wayland.log" 2>&1
 grep -q 'native_research_host=loaded;focus=true;session=wayland' "$state/wayland.log"
 printf '%s\n' 'Native X11 and Wayland research client checks passed.'
