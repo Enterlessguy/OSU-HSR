@@ -33,6 +33,11 @@ namespace osu.Desktop
         [STAThread]
         public static void Main(string[] args)
         {
+            if (args.Length == 1 && args[0] == "--print-research-boundary")
+            {
+                Console.WriteLine($"research={osu.Game.Research.ResearchBuild.Enabled};login={osu.Game.Research.ResearchBuild.AllowsLogin};submission={osu.Game.Research.ResearchBuild.AllowsScoreSubmission(Array.Empty<osu.Game.Rulesets.Mods.Mod>())}");
+                return;
+            }
             // IMPORTANT DON'T IGNORE: For general sanity, velopack's setup needs to run before anything else.
             // This has bitten us in the rear before (bricked updater), and although the underlying issue from
             // last time has been fixed, let's not tempt fate.
@@ -75,6 +80,8 @@ namespace osu.Desktop
             string cwd = Environment.CurrentDirectory;
 
             string gameName = base_game_name;
+            if (osu.Game.Research.ResearchBuild.Enabled)
+                gameName = "osu-development";
             bool tournamentClient = false;
 
             foreach (string arg in args)
@@ -97,14 +104,16 @@ namespace osu.Desktop
                         if (!int.TryParse(val, out int clientID))
                             throw new ArgumentException("Provided client ID must be an integer.");
 
-                        gameName = $"{base_game_name}-{clientID}";
+                        gameName = $"{gameName}-{clientID}";
                         break;
                 }
             }
 
             var hostOptions = new HostOptions
             {
-                IPCPipeName = !tournamentClient ? OsuGame.IPC_PIPE_NAME : null,
+                IPCPipeName = !tournamentClient
+                    ? (osu.Game.Research.ResearchBuild.Enabled ? "osu-human-sim-research" : OsuGame.IPC_PIPE_NAME)
+                    : null,
                 FriendlyGameName = OsuGameBase.GAME_NAME,
             };
 
@@ -123,7 +132,7 @@ namespace osu.Desktop
                     }
                 }
 
-                if (host.IsPrimaryInstance)
+                if (host.IsPrimaryInstance && !osu.Game.Research.ResearchBuild.Enabled)
                 {
                     try
                     {
@@ -180,6 +189,8 @@ namespace osu.Desktop
 
         private static void setupVelopack(string[] args)
         {
+            if (osu.Game.Research.ResearchBuild.Enabled)
+                return;
             // Arguments being present indicate the user is either starting the game in a special (aka tournament) mode,
             // or is running with pending imports via file association or otherwise.
             //

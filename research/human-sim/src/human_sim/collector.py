@@ -31,6 +31,8 @@ def collect_replays(score_ids_file: str | Path, output_dir: str | Path, delay_se
     score_ids = [line.strip() for line in Path(score_ids_file).read_text(encoding="utf-8").splitlines() if line.strip()]
     downloaded = skipped = unavailable = 0
     for score_id in score_ids:
+        if not score_id.isascii() or not score_id.isdecimal():
+            raise ValueError("score IDs must contain ASCII decimal digits only")
         target = destination / f"{score_id}.osr"
         if target.exists() and target.stat().st_size > 0:
             skipped += 1
@@ -38,7 +40,9 @@ def collect_replays(score_ids_file: str | Path, output_dir: str | Path, delay_se
         request = Request(f"{API_ROOT}/scores/{score_id}/download", headers={"Authorization": f"Bearer {token}"})
         try:
             with urlopen(request, timeout=45) as response:
-                payload = response.read()
+                payload = response.read(16 * 1024 * 1024 + 1)
+                if len(payload) > 16 * 1024 * 1024:
+                    raise ValueError("replay exceeds the 16 MiB acquisition limit")
         except HTTPError as error:
             if error.code in {404, 422}:
                 unavailable += 1

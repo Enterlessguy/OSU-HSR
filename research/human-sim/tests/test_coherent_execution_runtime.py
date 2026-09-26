@@ -78,7 +78,9 @@ def test_zero_delta_preserves_planner_trace_and_records_adapter():
         (frame.time_us, frame.k1, frame.k2) for frame in frames
     ]
     assert diagnostics["segment_count"] == 1
-    assert diagnostics["learned_segment_count"] == 1
+    assert diagnostics["learned_segment_count"] == 0
+    assert diagnostics["fallback_segment_count"] == 1
+    assert diagnostics["windows"][0]["reason"] == "zero_learned_delta"
     assert diagnostics["changed_sample_count"] == 0
     assert diagnostics["model_sha256"] == "c" * 64
 
@@ -90,6 +92,17 @@ def test_zero_blend_is_explicit_fallback():
     assert output == frames
     assert diagnostics["effective_mode"] == "math-only"
     assert diagnostics["fallback"] is True
+
+
+@pytest.mark.parametrize("frames", [
+    [TraceFrame(0, float("nan"), 0, False, False), TraceFrame(2000, 1, 1, False, False)],
+    [TraceFrame(2000, 1, 1, False, False), TraceFrame(0, 2, 2, False, False)],
+    [TraceFrame(0, 1, 1, False, False), TraceFrame(0, 2, 2, False, False)],
+])
+def test_invalid_input_fails_before_trajectory_composition(frames):
+    model = CoherentTrajectoryModel("c" * 64, "d" * 64, np.zeros(22), np.ones(22), np.zeros((45, 23, 2)), 7)
+    with pytest.raises(ValueError, match="strictly increasing timestamps"):
+        apply_coherent_trajectory_model(frames, _plan(), model)
 
 
 def test_default_auto_run_resolves_pinned_gated_model():

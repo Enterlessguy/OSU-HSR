@@ -31,6 +31,19 @@ internal static class Program
         try
         {
             Options options = Options.Parse(args);
+            int verifyIndex = Array.IndexOf(args, "--verify-plan");
+            if (verifyIndex >= 0)
+            {
+                string hash = args[verifyIndex + 1];
+                string storage = options.OsuStoragePath ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "osu-development", "files");
+                if (hash.Length != 64 || Convert.FromHexString(hash).Length != 32)
+                    throw new InvalidDataException("--verify-plan requires a beatmap SHA-256");
+                string map = Path.Combine(storage, hash[..1], hash[..2], hash);
+                string md5 = Convert.ToHexString(MD5.HashData(File.ReadAllBytes(map))).ToLowerInvariant();
+                Trace verified = await prepareAutomaticTraceFor(hash, md5, Array.Empty<string>(), 1.0, options, options.ClientPath).ConfigureAwait(false);
+                Console.WriteLine(JsonSerializer.Serialize(new { verification = "compiled_runner_planning_only", frames = verified.Frames.Count, header = verified.Header }));
+                return 0;
+            }
             if (options.LogPath != null)
             {
                 string logPath = Path.GetFullPath(options.LogPath);
@@ -305,11 +318,6 @@ internal static class Program
 
         string exporter = Path.Combine(workspaceRoot, "research", "HumanSim.MapExporter", "bin", "Debug", "net8.0", "HumanSim.MapExporter.exe");
         string planner = Path.Combine(workspaceRoot, "research", "human-sim", ".venv", "Scripts", "human-sim.exe");
-        if (!File.Exists(planner))
-        {
-            string sharedPlanner = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "OSU map  human simulator", "research", "human-sim", ".venv", "Scripts", "human-sim.exe");
-            if (File.Exists(sharedPlanner)) planner = sharedPlanner;
-        }
         if (!File.Exists(exporter))
             throw new FileNotFoundException("HumanSim.MapExporter has not been built", exporter);
         if (!File.Exists(planner))
@@ -364,7 +372,8 @@ internal static class Program
             }
             if (options.AutoPlanMode == "perfect")
                 planArguments.Add("--perfect-baseline");
-            await runTool("human-sim planner", planner, Path.GetDirectoryName(planner)!, planArguments, options.PlanningTimeoutSeconds).ConfigureAwait(false);
+            await runTool("human-sim planner", planner, Path.GetDirectoryName(planner)!, planArguments, options.PlanningTimeoutSeconds,
+                Path.Combine(workspaceRoot, "research", "human-sim", "src")).ConfigureAwait(false);
             return targetTracePath;
         }
 
@@ -619,7 +628,7 @@ internal static class Program
         throw new DirectoryNotFoundException("Unable to locate the human-simulator workspace root; pass --workspace-root explicitly.");
     }
 
-    private static async Task runTool(string label, string executable, string workingDirectory, IEnumerable<string> arguments, int timeoutSeconds)
+    private static async Task runTool(string label, string executable, string workingDirectory, IEnumerable<string> arguments, int timeoutSeconds, string? pythonSource = null)
     {
         var startInfo = new ProcessStartInfo(executable)
         {
@@ -631,6 +640,8 @@ internal static class Program
         };
         foreach (string argument in arguments)
             startInfo.ArgumentList.Add(argument);
+        if (pythonSource != null)
+            startInfo.Environment["PYTHONPATH"] = pythonSource;
 
         using Process process = Process.Start(startInfo) ?? throw new InvalidOperationException($"Unable to start {label}.");
         Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync();
@@ -1267,6 +1278,7 @@ internal sealed record Options(
         if (motionMode is not ("profile" or "perfect")) throw new ArgumentException("--motion-mode must be profile or perfect.");
         if (executionMode is not ("math-only" or "hybrid" or "coherent")) throw new ArgumentException("--execution-mode must be math-only, hybrid, or coherent.");
         if (!double.IsFinite(executionBlend) || executionBlend is < 0 or > 1) throw new ArgumentException("--execution-blend must be between 0 and 1.");
+        if (executionMode == "coherent" && executionBlend <= 0) throw new ArgumentException("coherent execution requires a positive blend.");
         if (executionMode == "math-only" && (executionModel != null || executionBlend > 0)) throw new ArgumentException("math-only execution cannot receive a model or non-zero blend.");
         if (executionMode != "math-only" && executionBlend > 0 && executionModel == null) throw new ArgumentException($"{executionMode} execution requires --execution-model.");
         if (executionModel != null)

@@ -109,6 +109,8 @@ namespace osu.Desktop
 
         protected override UpdateManager CreateUpdateManager()
         {
+            if (osu.Game.Research.ResearchBuild.Enabled)
+                return new NoActionUpdateManager();
             // If this is the first time we've run the game, ie it is being installed,
             // reset the user's release stream to "lazer".
             //
@@ -125,6 +127,8 @@ namespace osu.Desktop
 
         public override bool RestartAppWhenExited()
         {
+            if (osu.Game.Research.ResearchBuild.Enabled)
+                return false;
             RestartOnExitAction = () => Velopack.UpdateExe.Start(waitPid: (uint)Environment.ProcessId);
             return true;
         }
@@ -133,7 +137,8 @@ namespace osu.Desktop
         {
             base.LoadComplete();
 
-            LoadComponentAsync(new DiscordRichPresence(), Add);
+            if (!osu.Game.Research.ResearchBuild.Enabled)
+                LoadComponentAsync(new DiscordRichPresence(), Add);
 
             switch (RuntimeInfo.OS)
             {

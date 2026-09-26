@@ -47,6 +47,8 @@ class CoherentTrajectoryModel:
 
 def load_coherent_model(path: str | Path) -> CoherentTrajectoryModel:
     source = Path(path)
+    if source.stat().st_size > 5 * 1024 * 1024:
+        raise ValueError("coherent model exceeds the 5 MiB research artifact limit")
     raw = source.read_bytes()
     bundle = json.loads(raw)
     declared = str(bundle.get("sha256") or "")
@@ -283,6 +285,8 @@ def _predict(context: dict[str, Any], model: CoherentTrajectoryModel) -> np.ndar
 def _frame_arrays(frames: Sequence[TraceFrame]) -> tuple[np.ndarray, np.ndarray]:
     times = np.asarray([frame.time_us / 1000.0 for frame in frames], dtype=float)
     points = np.asarray([[frame.x, frame.y] for frame in frames], dtype=float)
+    if not np.all(np.isfinite(times)) or not np.all(np.isfinite(points)) or np.any(np.diff(times) <= 0):
+        raise ValueError("coherent input requires finite coordinates and strictly increasing timestamps")
     return times, points
 
 
@@ -374,6 +378,12 @@ def apply_coherent_trajectory_model(
         local_times = times[mask]
         matrix = _design(local_times, context["nodes"])
         delta_points = matrix @ delta_coefficients
+        if not np.all(np.isfinite(delta_points)):
+            records.append({"object_indices": object_indices, "accepted": False, "reason": "nonfinite_learned_delta"})
+            continue
+        if not np.any(np.linalg.norm(delta_points, axis=1) > 1e-9):
+            records.append({"object_indices": object_indices, "accepted": False, "reason": "zero_learned_delta"})
+            continue
         base_points = points[mask].copy()
         base_summary = exact_kinematic_summary(base_points, local_times, constraints)
         accepted_alpha: float | None = None

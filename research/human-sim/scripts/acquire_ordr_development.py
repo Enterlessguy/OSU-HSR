@@ -32,7 +32,7 @@ OUT = ROOT / "output" / "external-ordr-v155"
 
 
 def md5(path: Path) -> str:
-    return hashlib.md5(path.read_bytes()).hexdigest()
+    return hashlib.md5(path.read_bytes(), usedforsecurity=False).hexdigest()
 
 
 def main() -> None:
@@ -42,7 +42,7 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=4)
     args = parser.parse_args()
     if not 1 <= args.workers <= 4:
-        raise ValueError("workers must be 1–4")
+        raise ValueError("workers must be 1â€“4")
     proposal_path = OUT / "split-proposal-v1.json"
     proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
     partition = proposal["partitions"][args.split]

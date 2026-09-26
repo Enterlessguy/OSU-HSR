@@ -15,7 +15,7 @@ PILOT = ROOT / "output" / "external-ordr-v155" / "development-pilot-v1"
 
 
 def md5(path: Path) -> str:
-    return hashlib.md5(path.read_bytes()).hexdigest()
+    return hashlib.md5(path.read_bytes(), usedforsecurity=False).hexdigest()
 
 
 def main() -> None:

@@ -14,6 +14,7 @@ from pathlib import Path
 import sys
 import time
 
+import argparse
 import numpy as np
 
 
@@ -23,7 +24,9 @@ WORKTREE = Path(os.environ.get("HSR_RESEARCH_ROOT", str(ROOT))).resolve()
 OLD = WORKTREE / "output" / "grouped-coherent-learning-curve-v1-corrected"
 DEST = OUT / "mixed-coherent-train-v1"
 sys.path.insert(0, str(WORKTREE))
-import scripts.run_grouped_coherent_learning_curve_v1 as grouped  # noqa: E402
+from human_sim import coherent_training as grouped
+from human_sim.execution import canonical_sha256
+from train_ordr_math_residual import atomic, jsonable  # noqa: E402
 from human_sim.coherent_execution import load_coherent_model  # noqa: E402
 
 
@@ -37,7 +40,9 @@ def ordered(source: str, keys: list[str]) -> list[str]:
 
 def main() -> None:
     DEST.mkdir(parents=True, exist_ok=True)
-    grouped.coherent.pilot.detail.install(4)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prepare-only", action="store_true", help="Stage reviewed TRAIN inputs for the public residual trainer without legacy data")
+    args = parser.parse_args()
     audit_path = OUT / "development-identity-audit-v1.json"
     audit = json.loads(audit_path.read_text(encoding="utf-8"))
     eligible = {(row["split"], row["replay_md5"]) for row in audit["records"] if row["metadata_eligible"]}
@@ -67,9 +72,12 @@ def main() -> None:
                 os.link(original, linked)
             if linked.stat().st_size != original.stat().st_size:
                 raise ValueError(f"TRAIN hardlink size mismatch: {linked}")
+    if args.prepare_only:
+        print(f"Prepared {len(train_rows)} reviewed TRAIN inputs; confirmation untouched")
+        return
     admitted, admission_report = grouped.admission({"records": train_rows}, source, recipients)
     admission_path = DEST / "new-admission-report.json"
-    grouped.atomic(admission_path, admission_report)
+    atomic(admission_path, admission_report)
     if admission_report["admitted_components"] < 100:
         raise ValueError(f"Only {admission_report['admitted_components']} new independent components; need 100")
     new_groups: dict[str, list[dict]] = defaultdict(list)
@@ -107,17 +115,17 @@ def main() -> None:
             "old_admitted_arrays": sha(old_arrays_path),
             "trainer_script": sha(Path(__file__)),
             "grouped_trainer": sha(Path(grouped.__file__)),
-            "coherent_trainer": sha(Path(grouped.coherent.__file__)),
+            "coherent_trainer": sha(Path(grouped.__file__)),
         },
     }
-    spec["sha256"] = grouped.canonical_sha256(spec)
+    spec["sha256"] = canonical_sha256(spec)
     spec_path = DEST / "frozen-fit-spec.json"
     if spec_path.exists() and json.loads(spec_path.read_text(encoding="utf-8")) != spec:
         raise ValueError("Existing frozen fit specification differs")
-    grouped.atomic(spec_path, spec)
+    atomic(spec_path, spec)
     print(f"frozen groups=200 contexts={len(selected)} new={spec['new_contexts']} old={spec['old_contexts']}", flush=True)
     started = time.perf_counter()
-    joint, fit_rows = grouped.coherent.train_joint(selected, grouped.bank_amplitudes(selected))
+    joint, fit_rows = grouped.train_joint(selected, grouped.bank_amplitudes(selected))
     wall = time.perf_counter() - started
     bundle = {
         "joint": joint, "seed": 101, "group_size": 200,
@@ -127,12 +135,12 @@ def main() -> None:
         "source": "new public-score-matched o!rdr TRAIN and prior disjoint osu3k TRAIN",
         "human_provenance_limit": "public score metadata is corroboration, not proof of manual execution",
     }
-    bundle["sha256"] = grouped.canonical_sha256(grouped.coherent.pilot.backbone._jsonable(bundle))
+    bundle["sha256"] = canonical_sha256(jsonable(bundle))
     model_path = DEST / "seed101-mixed-g200.json"
-    grouped.atomic(model_path, bundle)
+    atomic(model_path, bundle)
     verified = load_coherent_model(model_path)
     report = {"schema_version": "ordr-mixed-coherent-fit-v1", "fit_wall_s": wall, "fit_rows": len(fit_rows), "new_contexts": spec["new_contexts"], "old_contexts": spec["old_contexts"], "model_canonical_sha256": verified.canonical_sha256, "model_file_sha256": sha(model_path), "model_path": str(model_path), "confirmation_access": False, "validation_movement_access": False, "deployment_status": "candidate_not_promoted"}
-    grouped.atomic(DEST / "fit-report.json", report)
+    atomic(DEST / "fit-report.json", report)
     print(json.dumps(report, indent=2))
 
 

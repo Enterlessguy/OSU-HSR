@@ -13,23 +13,37 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import time
 
 import numpy as np
+import argparse
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "output/external-ordr-v155"
 WORKTREE = Path(os.environ.get("HSR_RESEARCH_ROOT", str(ROOT))).resolve()
-VARIANT = ROOT / "output/adapter-experiments/math-residual-v1/src"
 SOURCE = OUT / "mixed-coherent-train-v1/source"
-DEST = OUT / "math-residual-train-v1"
+DEST = OUT / "math-residual-train-v3"
 sys.path.insert(0, str(WORKTREE))
-import scripts.run_grouped_coherent_learning_curve_v1 as grouped  # noqa: E402
+from human_sim import coherent_training as grouped
+from human_sim.execution import canonical_sha256
+from human_sim.coherent_execution import load_coherent_model  # noqa: E402
 from human_sim.io import load_map_plan  # noqa: E402
 from human_sim.planner import HumanTracePlanner  # noqa: E402
 from human_sim.schemas import HumanProfile  # noqa: E402
+
+
+def jsonable(value):
+    if isinstance(value, np.ndarray): return value.tolist()
+    if isinstance(value, np.generic): return value.item()
+    if isinstance(value, dict): return {k:jsonable(v) for k,v in value.items()}
+    if isinstance(value, (tuple,list)): return [jsonable(v) for v in value]
+    return value
+
+def atomic(path, value):
+    temporary=path.with_suffix(path.suffix+".tmp")
+    temporary.write_text(json.dumps(jsonable(value),indent=2,allow_nan=False)+"\n",encoding="utf-8")
+    temporary.replace(path)
 
 
 def sha(path: Path) -> str:
@@ -41,8 +55,11 @@ def order(keys: list[str]) -> list[str]:
 
 
 def main() -> None:
-    DEST.mkdir(parents=True, exist_ok=True)
-    grouped.coherent.pilot.detail.install(4)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, default=DEST)
+    args = parser.parse_args()
+    dest = args.output.resolve()
+    dest.mkdir(parents=True, exist_ok=True)
     audit_path = OUT / "development-identity-audit-v1.json"
     manifest_path = OUT / "development-batches/train/window-manifest.json"
     audit = json.loads(audit_path.read_text(encoding="utf-8"))
@@ -54,7 +71,7 @@ def main() -> None:
         path = OUT / "development-batches" / split / "window-manifest.json"
         recipients.extend(json.loads(path.read_text(encoding="utf-8"))["records"])
     admitted, admission_report = grouped.admission({"records": train_rows}, SOURCE, recipients)
-    grouped.atomic(DEST / "admission-report.json", admission_report)
+    atomic(dest / "admission-report.json", admission_report)
     groups: dict[str, list[dict]] = defaultdict(list)
     for row in admitted:
         groups[row["identity"]["component_id"]].append(row)
@@ -64,7 +81,7 @@ def main() -> None:
     selected = [row for key in selected_ids for row in groups[key]]
     profile = HumanProfile(99.5, 42, 500, perfect_baseline=False, skill_level=99.5, effort_level=100.0)
     spec = {
-        "schema_version": "ordr-math-residual-fit-freeze-v1",
+        "schema_version": "ordr-math-residual-fit-freeze-v3",
         "selection": "same first 100 SHA256-ordered new TRAIN components as mixed fit",
         "component_ids": selected_ids, "contexts": len(selected), "seed": 101, "group_size": 100,
         "math_profile": {"skill": 99.5, "effort": 100.0, "seed": 42, "timing_level": 500, "perfect_baseline": False},
@@ -72,17 +89,18 @@ def main() -> None:
         "confirmation_access": False, "validation_movement_access": False,
         "source_hashes": {
             "identity_audit": sha(audit_path), "train_manifest": sha(manifest_path),
-            "admission_report": sha(DEST / "admission-report.json"),
+            "admission_report": sha(dest / "admission-report.json"),
             "fit_script": sha(Path(__file__)),
-            "trainer": sha(Path(grouped.coherent.__file__)),
-            "variant_adapter": sha(VARIANT / "human_sim/coherent_execution.py"),
+            "trainer": sha(Path(grouped.__file__)),
+            "variant_adapter": sha(Path(grouped.runtime.__file__)),
+            "math_planner": sha(Path(sys.modules[HumanTracePlanner.__module__].__file__)),
         },
     }
-    spec["sha256"] = grouped.canonical_sha256(spec)
-    spec_path = DEST / "frozen-fit-spec.json"
+    spec["sha256"] = canonical_sha256(spec)
+    spec_path = dest / "frozen-fit-spec.json"
     if spec_path.exists() and json.loads(spec_path.read_text(encoding="utf-8")) != spec:
         raise ValueError("Existing frozen fit spec differs")
-    grouped.atomic(spec_path, spec)
+    atomic(spec_path, spec)
     math_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     transformed = []
     residual_rms = []
@@ -103,7 +121,7 @@ def main() -> None:
         if times[0] < math_times[0] or times[-1] > math_times[-1]:
             raise ValueError(f"Math trace does not cover TRAIN context: {map_md5}")
         math_at_human_times = np.column_stack([np.interp(times, math_times, math_positions[:, axis]) for axis in range(2)])
-        task_at_human_times = grouped.coherent.pilot.detail.design(times, context["nodes"], 4) @ context["baseline"]
+        task_at_human_times = grouped.runtime._design(times, context["nodes"], 4) @ context["baseline"]
         residual = context["observed"] - math_at_human_times
         context["observed"] = task_at_human_times + residual
         residual_rms.append(float(np.sqrt(np.mean(np.sum(residual**2, axis=1)))))
@@ -111,33 +129,23 @@ def main() -> None:
         if number % 20 == 0:
             print(f"MATH TARGET {number}/{len(selected)} maps={len(math_cache)}", flush=True)
     started = time.perf_counter()
-    model, fit_rows = grouped.coherent.train_joint(transformed, grouped.bank_amplitudes(transformed))
+    model, fit_rows = grouped.train_joint(transformed, grouped.bank_amplitudes(transformed))
     fit_wall = time.perf_counter() - started
     bundle = {
         "joint": model, "seed": 101, "group_size": 100,
         "component_ids": selected_ids, "fit_context_count": len(transformed),
-        "fit_wall_s": fit_wall, "frozen_fit_spec_sha256": spec["sha256"],
+        "frozen_fit_spec_sha256": spec["sha256"],
         "target": spec["target"],
         "human_provenance_limit": "public score metadata corroborates identity, not manual execution",
     }
-    bundle["sha256"] = grouped.canonical_sha256(grouped.coherent.pilot.backbone._jsonable(bundle))
-    model_path = DEST / "seed101-math-residual-g100.json"
-    grouped.atomic(model_path, bundle)
-    # Verify in a fresh interpreter so the already imported TRAIN package does
-    # not shadow the isolated group-100 research adapter. The desktop loader
-    # remains unchanged.
-    environment = os.environ.copy()
-    environment["PYTHONPATH"] = str(VARIANT)
-    environment["PYTHONDONTWRITEBYTECODE"] = "1"
-    validated = subprocess.run(
-        [sys.executable, "-c", "import sys; from human_sim.coherent_execution import load_coherent_model; print(load_coherent_model(sys.argv[1]).canonical_sha256)", str(model_path)],
-        capture_output=True, text=True, check=True, env=environment,
-    )
-    verified_hash = validated.stdout.strip()
+    bundle["sha256"] = canonical_sha256(jsonable(bundle))
+    model_path = dest / "seed101-math-residual-g100.json"
+    atomic(model_path, bundle)
+    verified_hash = load_coherent_model(model_path).canonical_sha256
     if verified_hash != bundle["sha256"]:
-        raise ValueError("Fresh research runtime loader returned another model hash")
+        raise ValueError("Runtime loader returned another model hash")
     report = {
-        "schema_version": "ordr-math-residual-fit-v1",
+        "schema_version": "ordr-math-residual-fit-v3",
         "contexts": len(transformed), "groups": len(selected_ids), "maps": len(math_cache),
         "fit_wall_s": fit_wall, "fit_rows": len(fit_rows),
         "training_residual_rms_median_px": float(np.median(residual_rms)),
@@ -146,7 +154,7 @@ def main() -> None:
         "confirmation_access": False, "validation_movement_access": False,
         "deployment_status": "research_candidate_not_promoted",
     }
-    grouped.atomic(DEST / "fit-report.json", report)
+    atomic(dest / "fit-report.json", report)
     print(json.dumps(report, indent=2))
 
 
