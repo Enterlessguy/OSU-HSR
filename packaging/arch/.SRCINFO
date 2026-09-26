@@ -41,12 +41,12 @@ pkgbase = intelligence-database-hsr
 	depends = python-pydantic
 	depends = python-joblib
 	depends = zlib
+	noextract = bass_fx24-linux.zip
 	options = !debug
 	options = !strip
 	source = intelligence-database-hsr::git+https://github.com/Enterlessguy/OSU-HSR.git#commit=0e4acb73dce7853d10020f336c43722a2c2b3843
 	source = https://ffmpeg.org/releases/ffmpeg-4.3.3.tar.xz
 	source = https://www.un4seen.com/files/z/0/bass_fx24-linux.zip
-	noextract = bass_fx24-linux.zip
 	sha256sums = SKIP
 	sha256sums = 9f0a68fbd74feb4e50dc220bddd59d84626774a53687fb737806ae00e5c6e9e6
 	sha256sums = 1ee97610bc2768357c4c344c0d7a058ac95edf51804c391fdcf7644762bd413b
