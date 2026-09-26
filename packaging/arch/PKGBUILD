@@ -106,7 +106,7 @@ package() {
     for tool in HumanSim.MapExporter HumanSim.ReplayExtractor HumanSim.Runner; do
       candidate="$_install_root/research/$tool/bin/Release/net8.0/${shared##*/}"
       if [[ -f "$candidate" && ! -L "$candidate" ]] && cmp -s -- "$shared" "$candidate"; then
-        ln -f -- "$shared" "$candidate"
+        ln -sf -- "$(realpath --relative-to="${candidate%/*}" "$shared")" "$candidate"
       fi
     done
   done
