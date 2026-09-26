@@ -27,7 +27,7 @@ It is independent of ppy Pty Ltd. The upstream base is `2026.726.0-lazer`.
 
 | Direction | Status | What users receive |
 |---|---|---|
-| Separate osu!lazer research build | Implemented | Fork source with HSR preinstalled, runner, tools and pinned JSON model; Windows verified, Linux X11 experimental |
+| Separate osu!lazer research build | Implemented | Fork source with HSR preinstalled, runner, tools and pinned JSON model; Linux uses private client input for X11 and Wayland |
 | Extension for official osu!lazer | Feasibility design | Architecture and acceptance requirements; no extension DLL |
 
 ### Separate research build

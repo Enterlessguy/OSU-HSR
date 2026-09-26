@@ -55,9 +55,6 @@ def _read_source(source: str | Path | Mapping[str, Any] | None) -> tuple[str, di
         return "", {}, None
     if isinstance(source, Mapping):
         return "", dict(source), "mapping"
-    path = Path(source)
-    if path.is_file():
-        return path.read_text(encoding="utf-8", errors="replace"), {}, str(path)
     # The assessment API also accepts an in-memory log string, which is useful
     # for CI and keeps tests independent of the Windows runner.
     inline = str(source)
@@ -79,6 +76,9 @@ def _read_source(source: str | Path | Mapping[str, Any] | None) -> tuple[str, di
     )
     if "\n" in inline or inline.lstrip().startswith("{") or any(marker in inline.lower() for marker in inline_markers):
         return inline, {}, "inline"
+    path = Path(source)
+    if path.is_file():
+        return path.read_text(encoding="utf-8", errors="replace"), {}, str(path)
     return "", {}, str(path)
 
 

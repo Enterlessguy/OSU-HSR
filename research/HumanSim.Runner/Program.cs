@@ -42,7 +42,7 @@ internal static class Program
                     Console.WriteLine("backend=research-client;display=x11-or-wayland;global-input=false;privileged-device-access=false");
                 }
                 else
-                    throw new PlatformNotSupportedException("The HSR runner supports Windows and X11 desktop sessions on Linux.");
+                    throw new PlatformNotSupportedException("The HSR runner supports Windows and Linux research clients.");
                 return 0;
             }
             catch (Exception exception)
@@ -58,7 +58,7 @@ internal static class Program
             int verifyIndex = Array.IndexOf(args, "--verify-plan");
             bool clientPlayback = OperatingSystem.IsLinux() && !options.TimingOnly;
             if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
-                throw new PlatformNotSupportedException("The HSR runner supports Windows and X11 desktop sessions on Linux.");
+                throw new PlatformNotSupportedException("The HSR runner supports Windows and Linux research clients.");
             if (verifyIndex >= 0)
             {
                 string hash = args[verifyIndex + 1];
