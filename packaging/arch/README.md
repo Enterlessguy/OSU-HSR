@@ -58,7 +58,8 @@ including free non-commercial use and restrictions on resale/sublicensing.
 The complete application must not be advertised as having exclusively MIT
 dependencies. Commercial/advertising-supported distribution requires checking
 the applicable vendor licence. See [BASS terms](https://www.un4seen.com/bass.html)
-and the generated inventory. This is an end-user research application;
+and the generated inventory. The package includes BASS's vendor licence text.
+This is an end-user research application;
 it does not sublicense BASS for use in other applications.
 
 .NET 8 support ends 2026-11-10. A supported runtime migration must precede that

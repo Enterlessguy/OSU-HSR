@@ -27,6 +27,11 @@ public static class Program
 
     public static int Main(string[] args)
     {
+        if (args.Length == 1 && args[0] is "--help" or "-h")
+        {
+            Console.WriteLine("Usage: hsr-map-exporter --map <file.osu> --output <plan.ndjson.gz> [--mods HD,HR,DT,HT] [--clock-rate <rate>]");
+            return 0;
+        }
         try
         {
             var options = Options.Parse(args);

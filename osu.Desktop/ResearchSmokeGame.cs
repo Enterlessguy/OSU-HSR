@@ -13,12 +13,22 @@ namespace osu.Desktop
             base.LoadComplete();
             Scheduler.AddDelayed(() =>
             {
-                if (!Host.IsActive.Value)
-                    throw new InvalidOperationException("Native research smoke window did not gain focus.");
-                Console.WriteLine(ResearchTraceInputHandler.VerifyContracts());
-                Console.WriteLine($"native_research_host=loaded;focus=true;session={Environment.GetEnvironmentVariable("XDG_SESSION_TYPE") ?? "unknown"};login=false;submission=false");
-                Succeeded = true;
-                Host.Exit();
+                try
+                {
+                    if (!Host.IsActive.Value)
+                        throw new InvalidOperationException("Native research smoke window did not gain focus.");
+                    Console.WriteLine(ResearchTraceInputHandler.VerifyContracts());
+                    Console.WriteLine($"native_research_host=loaded;focus=true;session={Environment.GetEnvironmentVariable("XDG_SESSION_TYPE") ?? "unknown"};login=false;submission=false");
+                    Succeeded = true;
+                }
+                catch (Exception error)
+                {
+                    Console.Error.WriteLine(error);
+                }
+                finally
+                {
+                    Host.Exit();
+                }
             }, 3000);
         }
     }

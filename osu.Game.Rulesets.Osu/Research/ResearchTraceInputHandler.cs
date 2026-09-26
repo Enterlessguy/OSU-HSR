@@ -117,7 +117,29 @@ namespace osu.Game.Rulesets.Osu.Research
                 if (handler.Failure == null || inputs.OfType<ReplayState<OsuAction>>().Single().PressedActions.Count != 0)
                     throw new InvalidDataException("Backward clock failed to release synthetic keys.");
             }
-            return $"research_trace_checks={checks};transport_checks={transportChecks};rates=0.75,1,1.5;skipped_frames=0;key_edges=preserved";
+            var resizedTrace = new ResearchTraceData
+            {
+                RunToken = "resize-test", BeatmapSha256 = new string('a', 64), ClockRate = 1,
+                Frames = new List<ResearchTraceFrame>
+                {
+                    new() { TimeUs = 0, X = 100, Y = 200 },
+                    new() { TimeUs = 1_000_000, X = 101, Y = 200, K1 = true },
+                    new() { TimeUs = 2_000_000, X = 102, Y = 200 },
+                },
+            };
+            resizedTrace.Validate("resize-test", new string('a', 64), 1);
+            var resizedHandler = new ResearchTraceInputHandler(resizedTrace) { GamefieldToScreenSpace = p => p };
+            resizedHandler.SetFrameFromTime(1000);
+            resizedHandler.CollectPendingInputs(new List<IInput>());
+            resizedHandler.SetFrameFromTime(1000);
+            resizedHandler.CollectPendingInputs(new List<IInput>());
+            resizedHandler.GamefieldToScreenSpace = p => p * 1.25f;
+            var releasedInputs = new List<IInput>();
+            resizedHandler.CollectPendingInputs(releasedInputs);
+            if (resizedHandler.Failure == null || resizedHandler.Completed
+                || releasedInputs.OfType<ReplayState<OsuAction>>().Single().PressedActions.Count != 0)
+                throw new InvalidDataException("Scale change failed to abort and release synthetic keys.");
+            return $"research_trace_checks={checks};transport_checks={transportChecks};rates=0.75,1,1.5;skipped_frames=0;key_edges=preserved;scale_abort=passed";
         }
 
         private static Replay createTimeline(ResearchTraceData trace)

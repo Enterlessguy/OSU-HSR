@@ -5,11 +5,12 @@ pkgbase = intelligence-database-hsr
 	url = https://github.com/Enterlessguy/OSU-HSR
 	arch = x86_64
 	license = MIT
-	license = custom
+	license = LicenseRef-BASS
 	checkdepends = python-pytest
 	makedepends = dotnet-sdk-8.0
 	makedepends = git
 	depends = alsa-lib
+	depends = bash
 	depends = dotnet-runtime-8.0
 	depends = ffmpeg
 	depends = fontconfig
@@ -37,6 +38,8 @@ pkgbase = intelligence-database-hsr
 	depends = python-pydantic
 	depends = python-joblib
 	depends = zlib
+	options = !debug
+	options = !strip
 	source = intelligence-database-hsr::git+https://github.com/Enterlessguy/OSU-HSR.git#commit=a5a3296d0e94523e92427b718c6d063a896ecdbc
 	sha256sums = SKIP
 

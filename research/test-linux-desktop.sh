@@ -32,15 +32,20 @@ env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 SDL_VIDEODRIVER=x11 xvfb-run -a -s '
     grep -q "native_research_host=loaded;focus=true;session=x11" "$HSR_SMOKE_STATE/x11.log"
 '
 
-weston --backend=headless-backend.so --renderer=pixman --socket=hsr-smoke-wayland --idle-time=0 > "$state/weston.log" 2>&1 &
-compositor_pid=$!
-for _ in $(seq 1 100); do
-    [[ -S "$XDG_RUNTIME_DIR/hsr-smoke-wayland" ]] && break
-    kill -0 "$compositor_pid" 2>/dev/null || { cat "$state/weston.log" >&2; exit 1; }
-    sleep 0.1
-done
-[[ -S "$XDG_RUNTIME_DIR/hsr-smoke-wayland" ]] || { cat "$state/weston.log" >&2; exit 1; }
-env -u DISPLAY XDG_SESSION_TYPE=wayland WAYLAND_DISPLAY=hsr-smoke-wayland SDL_VIDEO_DRIVER=wayland SDL_VIDEODRIVER=wayland WAYLAND_DEBUG=1 \
-    timeout 90s dotnet "$client" --verify-research-host > "$state/wayland.log" 2>&1
-grep -q 'native_research_host=loaded;focus=true;session=wayland' "$state/wayland.log"
+# A nested desktop supplies a keyboard seat; Weston headless has none and
+# cannot satisfy the client's real focus guard. The client talks only Wayland.
+env -u WAYLAND_DISPLAY xvfb-run -a -s '-screen 0 1280x720x24' bash -c '
+    openbox > "$HSR_SMOKE_STATE/wayland-openbox.log" 2>&1 & wm=$!
+    weston --backend=x11-backend.so --renderer=pixman --socket=hsr-smoke-wayland --idle-time=0 > "$HSR_SMOKE_STATE/weston.log" 2>&1 & compositor=$!
+    trap "kill $compositor $wm 2>/dev/null || true" EXIT
+    for _ in $(seq 1 100); do
+        [[ -S "$XDG_RUNTIME_DIR/hsr-smoke-wayland" ]] && break
+        kill -0 "$compositor" 2>/dev/null || exit 1
+        sleep 0.1
+    done
+    [[ -S "$XDG_RUNTIME_DIR/hsr-smoke-wayland" ]] || exit 1
+    env -u DISPLAY XDG_SESSION_TYPE=wayland WAYLAND_DISPLAY=hsr-smoke-wayland SDL_VIDEO_DRIVER=wayland SDL_VIDEODRIVER=wayland \
+        timeout 90s dotnet "$HSR_SMOKE_CLIENT" --verify-research-host > "$HSR_SMOKE_STATE/wayland.log" 2>&1
+    grep -q "native_research_host=loaded;focus=true;session=wayland" "$HSR_SMOKE_STATE/wayland.log"
+'
 printf '%s\n' 'Native X11 and Wayland research client checks passed.'

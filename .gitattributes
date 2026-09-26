@@ -31,3 +31,4 @@ packaging/arch/PKGBUILD text eol=lf
 packaging/arch/.SRCINFO text eol=lf
 packaging/arch/hsr-* text eol=lf
 packaging/arch/human-sim-wrapper text eol=lf
+packaging/arch/*.txt text eol=lf

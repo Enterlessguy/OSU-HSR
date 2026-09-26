@@ -4,9 +4,11 @@ pkgrel=1
 pkgdesc='Offline osu!lazer research build with visibly synthetic HSR traces'
 arch=('x86_64')
 url='https://github.com/Enterlessguy/OSU-HSR'
-license=('MIT' 'custom')
+license=('MIT' 'LicenseRef-BASS')
+options=('!debug' '!strip')
 depends=(
   'alsa-lib'
+  'bash'
   'dotnet-runtime-8.0'
   'ffmpeg'
   'fontconfig'
@@ -69,6 +71,7 @@ package() {
   install -d "$_install_root"
   install -Dm644 global.json "$_install_root/global.json"
   install -Dm644 LICENCE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 packaging/arch/BASS-LICENSE.txt "$pkgdir/usr/share/licenses/$pkgname/BASS-LICENSE.txt"
 
   install -d "$_install_root/osu.Desktop/bin/Release/net8.0"
   cp -a osu.Desktop/bin/Release/net8.0/linux-x64/publish/. "$_install_root/osu.Desktop/bin/Release/net8.0/"
