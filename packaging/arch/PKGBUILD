@@ -39,7 +39,7 @@ depends=(
 )
 makedepends=('dotnet-sdk-8.0' 'git')
 checkdepends=('python-pytest')
-source=("${pkgname}::git+https://github.com/Enterlessguy/OSU-HSR.git#commit=d08bad9718902fc3dd27e5accd734c182257157b"
+source=("${pkgname}::git+https://github.com/Enterlessguy/OSU-HSR.git#commit=632f100ae008b29eb00d8498ff3042e1cfe58a25"
         'https://ffmpeg.org/releases/ffmpeg-4.3.3.tar.xz'
         'https://www.un4seen.com/files/z/0/bass_fx24-linux.zip')
 sha256sums=('SKIP'
