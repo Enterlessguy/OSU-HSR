@@ -116,6 +116,7 @@ jobs:
           runuser -u builder -- intelligence-database-hsr --diagnostics
           runuser -u builder -- hsr-map-exporter --help
           runuser -u builder -- hsr-replay-extractor --help
+          runuser -u builder -- python "$GITHUB_WORKSPACE/research/verify-installed-planner.py" '/usr/lib/intelligence-database-hsr'
       - name: Verify the installed desktop package on X11 and Wayland
         run: |
           pacman -S --needed --noconfirm xorg-server-xvfb xorg-xauth openbox weston mesa vulkan-swrast
