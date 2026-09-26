@@ -87,9 +87,14 @@ model digest pass. The public source/history scan found no recognized findings.
 
 The Arch recipe publishes only linux-x64 runtime output and planner/model files,
 uses system Python dependencies, supplies check(), desktop launchers and a
-NuGet licence inventory. AUR metadata, makepkg/namcap, package installation and
-representative X11/Wayland desktop checks remain release gates until Linux
-CI or equivalent evidence has been collected. No AUR upload has occurred.
+NuGet licence inventory. AUR metadata, makepkg, installation, diagnostics and
+native X11/Wayland startup passed in [CI run 36279524900](https://github.com/Enterlessguy/OSU-HSR/actions/runs/36279524900)
+at source commit `ba77630`. Windows and Ubuntu checks also passed. Namcap
+reported no errors; retained native-library hardening and dependency warnings
+are described in `packaging/arch/NATIVE_DEPENDENCIES.md`.
+Subsequent notice/source-archive packaging changes require their own final CI
+run. Representative real-map gameplay on a physical Linux desktop remains
+unverified. No AUR upload has occurred.
 
 The small VPS stopped responding during initial Arch build validation; further
 builds must use CI, not that host. A stop of the named validation container

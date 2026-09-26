@@ -12,7 +12,7 @@ On Arch Linux x86_64, install the build dependencies and build as a normal user:
 
 ```sh
 sudo pacman -S --needed base-devel git dotnet-sdk-8.0 python-pytest
-git clone https://github.com/Enterlessguy/OSU-HSR.git
+git clone --branch codex/hsr-linux-readiness https://github.com/Enterlessguy/OSU-HSR.git
 cd OSU-HSR/packaging/arch
 makepkg --syncdeps --cleanbuild
 namcap PKGBUILD ./*.pkg.tar.zst
@@ -20,9 +20,8 @@ sudo pacman -U ./*.pkg.tar.zst
 intelligence-database-hsr --diagnostics
 ```
 
-The recipe's pinned compatibility revision must be public before these commands
-can fetch it. Until the reviewed changes are uploaded, use the local checkout
-validation described below. Do not run makepkg as root.
+These commands currently select the public Linux review branch. Main still
+contains the earlier source release. Do not run makepkg as root.
 
 ## Run
 

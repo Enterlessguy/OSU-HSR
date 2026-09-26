@@ -5,7 +5,10 @@ pkgbase = intelligence-database-hsr
 	url = https://github.com/Enterlessguy/OSU-HSR
 	arch = x86_64
 	license = MIT
+	license = LGPL-2.1-or-later
 	license = LicenseRef-BASS
+	license = LicenseRef-BASSmix
+	license = LicenseRef-BASS-FX
 	checkdepends = python-pytest
 	makedepends = dotnet-sdk-8.0
 	makedepends = git
@@ -41,6 +44,11 @@ pkgbase = intelligence-database-hsr
 	options = !debug
 	options = !strip
 	source = intelligence-database-hsr::git+https://github.com/Enterlessguy/OSU-HSR.git#commit=a5a3296d0e94523e92427b718c6d063a896ecdbc
+	source = https://ffmpeg.org/releases/ffmpeg-4.3.3.tar.xz
+	source = https://www.un4seen.com/files/z/0/bass_fx24-linux.zip
+	noextract = bass_fx24-linux.zip
 	sha256sums = SKIP
+	sha256sums = 9f0a68fbd74feb4e50dc220bddd59d84626774a53687fb737806ae00e5c6e9e6
+	sha256sums = 1ee97610bc2768357c4c344c0d7a058ac95edf51804c391fdcf7644762bd413b
 
 pkgname = intelligence-database-hsr

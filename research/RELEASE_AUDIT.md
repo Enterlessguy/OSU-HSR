@@ -58,7 +58,8 @@ Upstream deployment, Sentry and diff-calculation workflows are retained as
 `.yml.upstream` reference files, which GitHub does not execute. The active HSR
 workflow has read-only repository permission and builds with the research flag;
 it does not publish, contact upstream deployment services or use credentials.
-GitHub CI itself has not run until the branch is uploaded.
+The initial source audit preceded remote CI. The Linux review branch now
+runs Windows, Ubuntu and Arch checks; see the dated evidence below.
 
 The public-file/history scanner found no recognized secrets or private
 artifacts in 6,337 local Git blobs and 5,782 current tracked/unignored files
@@ -67,3 +68,37 @@ staged diff before uploading. Source ZIPs are made from a clean Git commit,
 never by archiving the working directory. Generated reports, stores, toolchains,
 logs, replay bytes and environments are ignored. Review asset checksums and
 repository identity before creating a GitHub release.
+
+## Linux package review — 2026-09-27
+
+The public `codex/hsr-linux-readiness` branch replaces the initial global X11
+prototype with authenticated private client input on X11 and Wayland.
+Transport is hashed and bounded, creates Unix files with mode 0600, checks
+token/map/rate and preserves explicit learned/fallback counters. Every recorded
+frame is important to the gameplay frame-stability scheduler. Focus loss,
+backward clocks and settled playfield-scale changes abort playback and release
+held actions. The research login/submission gates remain enforced.
+
+[CI run 36279524900](https://github.com/Enterlessguy/OSU-HSR/actions/runs/36279524900)
+passed all three jobs at `ba77630`: Windows builds/contracts, Ubuntu's 74
+Python tests and builds, unprivileged Arch makepkg, generated .SRCINFO comparison,
+namcap (zero errors), installation, installed command diagnostics, and native
+client startup on X11 and nested Wayland with keyboard focus. Handler checks
+cover 153 scheduled frames, exact key edges, duplicate accounting, three clock
+rates, backward-clock release and scale-change release; transport checks cover
+14 identity/frame/hash cases. Native startup checks exercise rendering and
+storage but do not play through a complete HSR map or measure physical latency.
+
+The final package includes vendor BASS-family notices, the intact BASS FX
+archive, FFmpeg LGPL text and checksum-pinned upstream source. The HSR source
+remains MIT; the complete binary stack includes proprietary BASS components.
+NuGet metadata alone is not a native-library licence determination. Namcap's
+upstream ELF hardening/private-library warnings and old FFmpeg 4.3.3 are retained
+limitations, not silently dismissed security findings. See the native dependency
+document. No vulnerability-free or fully open-source binary-stack claim is made.
+
+The source/history pattern scan inspected 6,461 Git blobs and 5,797 current
+tracked/unignored files with zero recognized findings before final packaging
+commit. Raw data and local logs remain excluded. Final public-pin CI, package
+inventory/hash review and a physical Linux desktop gameplay check are distinct
+release evidence levels. No AUR credentials or AUR publication are included.

@@ -102,10 +102,17 @@ jobs:
           # Validate this exact checkout even before its release pin is published.
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           runuser -u builder -- git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          sed -i "s@https://github.com/Enterlessguy/OSU-HSR.git#commit=[a-f0-9]*@file://$GITHUB_WORKSPACE#commit=$GITHUB_SHA@" /tmp/hsr-aur/PKGBUILD
+          # Manual runs validate the actual public recipe pin; push/PR runs test the checkout.
+          if [ "$GITHUB_EVENT_NAME" != 'workflow_dispatch' ]; then
+            sed -i "s@https://github.com/Enterlessguy/OSU-HSR.git#commit=[a-f0-9]*@file://$GITHUB_WORKSPACE#commit=$GITHUB_SHA@" /tmp/hsr-aur/PKGBUILD
+          fi
           runuser -u builder -- bash -lc 'cd /tmp/hsr-aur && makepkg --noconfirm --cleanbuild'
-          runuser -u builder -- bash -lc 'cd /tmp/hsr-aur && namcap PKGBUILD *.pkg.tar.zst'
+          runuser -u builder -- bash -lc 'cd /tmp/hsr-aur && namcap PKGBUILD *.pkg.tar.zst' > /tmp/hsr-aur/namcap.txt
+          cat /tmp/hsr-aur/namcap.txt
+          if grep -q ' E:' /tmp/hsr-aur/namcap.txt; then exit 1; fi
+          sha256sum /tmp/hsr-aur/*.pkg.tar.zst > /tmp/hsr-aur/SHA256SUMS
           pacman -U --noconfirm /tmp/hsr-aur/*.pkg.tar.zst
+          pacman -Ql intelligence-database-hsr > /tmp/hsr-aur/package-files.txt
           runuser -u builder -- intelligence-database-hsr --diagnostics
           runuser -u builder -- hsr-map-exporter --help
           runuser -u builder -- hsr-replay-extractor --help
@@ -113,7 +120,16 @@ jobs:
         run: |
           pacman -S --needed --noconfirm xorg-server-xvfb xorg-xauth openbox weston mesa vulkan-swrast
           runuser -u builder -- bash "$GITHUB_WORKSPACE/research/test-linux-desktop.sh" '/usr/lib/intelligence-database-hsr/osu.Desktop/bin/Release/net8.0/osu!.dll'
+      - name: Verify package removal
+        run: |
+          pacman -R --noconfirm intelligence-database-hsr
+          test ! -e /usr/bin/intelligence-database-hsr
+          test ! -e /usr/lib/intelligence-database-hsr
       - uses: actions/upload-artifact@v4
         with:
           name: intelligence-database-hsr-arch-x86_64
-          path: /tmp/hsr-aur/*.pkg.tar.zst
+          path: |
+            /tmp/hsr-aur/*.pkg.tar.zst
+            /tmp/hsr-aur/SHA256SUMS
+            /tmp/hsr-aur/package-files.txt
+            /tmp/hsr-aur/namcap.txt

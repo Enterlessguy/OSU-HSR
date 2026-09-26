@@ -4,7 +4,7 @@ pkgrel=1
 pkgdesc='Offline osu!lazer research build with visibly synthetic HSR traces'
 arch=('x86_64')
 url='https://github.com/Enterlessguy/OSU-HSR'
-license=('MIT' 'LicenseRef-BASS')
+license=('MIT' 'LGPL-2.1-or-later' 'LicenseRef-BASS' 'LicenseRef-BASSmix' 'LicenseRef-BASS-FX')
 options=('!debug' '!strip')
 depends=(
   'alsa-lib'
@@ -39,8 +39,13 @@ depends=(
 )
 makedepends=('dotnet-sdk-8.0' 'git')
 checkdepends=('python-pytest')
-source=("${pkgname}::git+https://github.com/Enterlessguy/OSU-HSR.git#commit=a5a3296d0e94523e92427b718c6d063a896ecdbc")
-sha256sums=('SKIP')
+source=("${pkgname}::git+https://github.com/Enterlessguy/OSU-HSR.git#commit=a5a3296d0e94523e92427b718c6d063a896ecdbc"
+        'https://ffmpeg.org/releases/ffmpeg-4.3.3.tar.xz'
+        'https://www.un4seen.com/files/z/0/bass_fx24-linux.zip')
+sha256sums=('SKIP'
+            '9f0a68fbd74feb4e50dc220bddd59d84626774a53687fb737806ae00e5c6e9e6'
+            '1ee97610bc2768357c4c344c0d7a058ac95edf51804c391fdcf7644762bd413b')
+noextract=('bass_fx24-linux.zip')
 
 build() {
   local _source="$srcdir/$pkgname"
@@ -72,6 +77,12 @@ package() {
   install -Dm644 global.json "$_install_root/global.json"
   install -Dm644 LICENCE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 packaging/arch/BASS-LICENSE.txt "$pkgdir/usr/share/licenses/$pkgname/BASS-LICENSE.txt"
+  install -Dm644 packaging/arch/BASSmix-LICENSE.txt "$pkgdir/usr/share/licenses/$pkgname/BASSmix-LICENSE.txt"
+  install -Dm644 packaging/arch/BASS-FX-LICENSE.txt "$pkgdir/usr/share/licenses/$pkgname/BASS-FX-LICENSE.txt"
+  install -Dm644 packaging/arch/NATIVE_DEPENDENCIES.md "$pkgdir/usr/share/licenses/$pkgname/NATIVE_DEPENDENCIES.md"
+  install -Dm644 "$srcdir/ffmpeg-4.3.3/COPYING.LGPLv2.1" "$pkgdir/usr/share/licenses/$pkgname/FFmpeg-LGPL-2.1.txt"
+  install -Dm644 "$srcdir/ffmpeg-4.3.3.tar.xz" "$pkgdir/usr/share/doc/$pkgname/native-source/ffmpeg-4.3.3.tar.xz"
+  install -Dm644 "$srcdir/bass_fx24-linux.zip" "$pkgdir/usr/share/doc/$pkgname/vendor/bass_fx24-linux.zip"
 
   install -d "$_install_root/osu.Desktop/bin/Release/net8.0"
   cp -a osu.Desktop/bin/Release/net8.0/linux-x64/publish/. "$_install_root/osu.Desktop/bin/Release/net8.0/"
@@ -87,6 +98,18 @@ package() {
   install -d "$_install_root/research/HumanSim.ReplayExtractor/bin/Release/net8.0"
   cp -a research/HumanSim.ReplayExtractor/HumanSim.ReplayExtractor.csproj "$_install_root/research/HumanSim.ReplayExtractor/"
   cp -a research/HumanSim.ReplayExtractor/bin/Release/net8.0/linux-x64/publish/. "$_install_root/research/HumanSim.ReplayExtractor/bin/Release/net8.0/"
+
+  # Keep tool-local dependency paths while storing identical runtime files once.
+  local shared tool candidate
+  for shared in "$_install_root/osu.Desktop/bin/Release/net8.0/"*; do
+    [[ -f "$shared" && ! -L "$shared" ]] || continue
+    for tool in HumanSim.MapExporter HumanSim.ReplayExtractor HumanSim.Runner; do
+      candidate="$_install_root/research/$tool/bin/Release/net8.0/${shared##*/}"
+      if [[ -f "$candidate" && ! -L "$candidate" ]] && cmp -s -- "$shared" "$candidate"; then
+        ln -f -- "$shared" "$candidate"
+      fi
+    done
+  done
 
   install -d "$_install_root/research"
   install -d "$_install_root/research/human-sim/models/experimental"
