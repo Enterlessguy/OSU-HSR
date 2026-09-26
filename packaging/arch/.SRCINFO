@@ -44,7 +44,7 @@ pkgbase = intelligence-database-hsr
 	noextract = bass_fx24-linux.zip
 	options = !debug
 	options = !strip
-	source = intelligence-database-hsr::git+https://github.com/Enterlessguy/OSU-HSR.git#commit=0e4acb73dce7853d10020f336c43722a2c2b3843
+	source = intelligence-database-hsr::git+https://github.com/Enterlessguy/OSU-HSR.git#commit=d08bad9718902fc3dd27e5accd734c182257157b
 	source = https://ffmpeg.org/releases/ffmpeg-4.3.3.tar.xz
 	source = https://www.un4seen.com/files/z/0/bass_fx24-linux.zip
 	sha256sums = SKIP
