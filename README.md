@@ -17,6 +17,12 @@ endorsed by, or supported by ppy Pty Ltd. The upstream project is
 [ppy/osu](https://github.com/ppy/osu), pinned here to tag
 `2026.726.0-lazer`.
 
+## Documentation
+
+Read the [complete technical guide](docs/TECHNICAL_GUIDE.md) for setup, movement
+math, model composition, training, schemas, runtime protocol, benchmark, security,
+troubleshooting and both distribution directions.
+
 ## Checkpoint status
 
 - Mathematical planner version in this checkout: `timing-sync-v2.17-coherent-test`.

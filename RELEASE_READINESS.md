@@ -1,10 +1,10 @@
 # Intelligence Database HSR release readiness
 
-Status: **ready for reviewed local V2 source-preview publication, pending owner approval of the GitHub target.**
-The planned target is configured origin `Enterlessguy/HSR-Checkpoint-2-final`.
-Ask the owner to approve the exact repository and reviewed release before
-uploading. No push, GitHub release, or inteldatabase.org deployment is authorized
-by this readiness record itself.
+Status: **reviewed local V2 source research preview**.
+The owner approved publication to public `Enterlessguy/OSU-HSR`. The repository
+includes the technical guide and both distribution directions. The older local
+checkpoint repository is retained separately; publication does not change it.
+No inteldatabase.org website deployment is part of this source release.
 
 ## Completed scope
 
@@ -68,4 +68,5 @@ in ignored local verification storage. This is compiler planning evidence,
 not a final interactive gameplay capture.
 Package a clean Git commit with `research/package-source.ps1`; inspect ZIP
 contents and checksums. Record exact evidence in the private handoff.
-Only then request the owner's publication approval for the exact GitHub target.
+Publication to public `Enterlessguy/OSU-HSR` is authorized. Preserve these
+checks for future releases and publish only the reviewed source/model package.

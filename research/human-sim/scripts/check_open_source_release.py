@@ -15,7 +15,7 @@ PRIVATE_NAMES = {"corpus.private.json", ".env", "credentials.json"}
 SECRET_MARKERS = {
     "private key block": re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
     "GitHub token": re.compile(rb"(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{50,})"),
-    "OpenAI style secret": re.compile(rb"sk-[A-Za-z0-9]{32,}"),
+    "API-style private credential": re.compile(rb"sk-[A-Za-z0-9]{32,}"),
     "AWS access key": re.compile(rb"AKIA[0-9A-Z]{16}"),
     "Slack token": re.compile(rb"xox[baprs]-[A-Za-z0-9-]{24,}"),
     "literal credential assignment": re.compile(
@@ -86,8 +86,8 @@ def main() -> None:
         source = ROOT / relative
         if not source.is_file():
             continue
-        hsr_scope = value.startswith("research/") or value in {
-            "readme.md", "release_readiness.md", ".gitignore", "licence",
+        hsr_scope = value.startswith(("research/", "docs/")) or value in {
+            "readme.md", "release_readiness.md", "handoff.md", "security.md", ".gitignore", "licence",
         }
         if hsr_scope and value.startswith("research/human-sim/output/") and value not in {
             "research/human-sim/output/phase1-aim-benchmark.md",

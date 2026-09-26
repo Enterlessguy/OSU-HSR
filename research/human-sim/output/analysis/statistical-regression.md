@@ -107,7 +107,7 @@ entries.
 Main was fast-forwarded to `ec40d456d312626b6e1862f4a4898d328dfc0282`
 (`timing-sync-v2.13`). The desktop shortcut was corrected to invoke the main
 checkout's `research/run-dev-build.ps1 -Update`; it had still referenced the
-temporary Codex worktree. Launcher validation also found and fixed the runner
+temporary isolated checkout. Launcher validation also found and fixed the runner
 artifact path: `HumanSim.Runner` targets `net8.0-windows`, not `net8.0`.
 
 The launcher's complete pre-launch toolchain was then exercised directly:

@@ -1,8 +1,8 @@
 # Execution-only AI over the mathematical planner
 
-User-approved direction, 2026-09-07. This document supersedes any broader AI
-path-generation proposals in MOVEMENT_ROADMAP.md. Implement in a separate task
-using gpt-5.6-luna with max reasoning.
+Historical execution-model direction, 2026-09-07. The current implemented
+residual architecture is documented in docs/TECHNICAL_GUIDE.md at the repository
+root. This document records the earlier path-preserving proposal.
 
 ## Non-negotiable responsibility split
 

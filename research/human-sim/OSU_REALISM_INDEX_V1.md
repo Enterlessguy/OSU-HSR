@@ -212,7 +212,7 @@ and success statistics in a separate context section. Never call endpoint phase
 completion hit accuracy. Existing 191-row, four-player, unlabelled training pilot
 cannot receive a certified ORI-V1 score.
 
-## Implementation and further training order for Luna
+## Implementation and further training order
 
 1. Audit current launcher/trace identity and sudden flickers. Add explicit
    math-only/hybrid selection and effective-mode display. Preserve existing changes
