@@ -19,6 +19,9 @@ endorsed by, or supported by ppy Pty Ltd. The upstream project is
 
 ## Documentation
 
+**Arch Linux testing download:** [v0.1.2 Arch preview](https://github.com/Enterlessguy/OSU-HSR/releases/tag/v0.1.2-arch-preview).
+Use the [native package/source installation and testing guide](packaging/arch/TESTING.md).
+
 Read the [complete technical guide](docs/TECHNICAL_GUIDE.md) for setup, movement
 math, model composition, training, schemas, runtime protocol, benchmark, security,
 troubleshooting and both distribution directions.
@@ -59,8 +62,9 @@ See [release notes](research/RELEASE_NOTES.md),
 
 - **Bundled build:** implemented osu!lazer research fork with HSR preinstalled,
   login/submission disabled and the Intelligence Database watermark. Windows
-  remains the verified OS dispatch platform; a Linux client timeline and PKGBUILD
-  are prepared but have not yet been verified by an Arch build or live run.
+  retains OS dispatch. The Arch package passed build/install/removal, native
+  X11/Wayland startup and installed model/compiler checks. Physical Linux
+  full-map gameplay remains a friend-testing gate for this preview.
 - **Official-client extension:** a custom ruleset is a feasibility direction;
   an arbitrary Mod DLL is not supported by the official loader. No extension
   DLL is shipped. See [both directions](research/DISTRIBUTION_OPTIONS.md).

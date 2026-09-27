@@ -114,3 +114,15 @@ The user approved publishing the Linux review branch and running CI on
 AUR credentials and upload approval are
 separate from source/CI review. Runtime-library commercial licence conditions
 must be retained; the source MIT licence does not relicense native BASS.
+
+## GitHub Arch testing publication — 2026-09-27
+
+The user authorized a downloadable Linux testing release for a friend to perform
+the physical desktop gameplay check. AUR publication is deferred: the user
+reports registration is temporarily closed and selected GitHub distribution.
+The testing release contains the verified 0.1.2-1 native Arch package and a
+pinned source build recipe. Both install the implemented separate research
+client; the official-client extension remains unimplemented. The native package
+and model hashes, prior CI evidence and dependency limitations above remain
+unchanged. This permission authorizes the testing release; it does not make
+the pending physical gameplay checks pass.

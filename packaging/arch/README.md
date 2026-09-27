@@ -1,5 +1,10 @@
 # Arch Linux installation and AUR preparation
 
+For the downloadable testing package and pinned source recipe, use the
+[Arch preview installation guide](TESTING.md). Both methods install the separate
+research build. GitHub is the current distribution channel; AUR publication is
+deferred while registration is unavailable. No official-client extension ships.
+
 HSR's Linux runner transfers a bounded, hashed synthetic timeline to its own
 research client. The client consumes each recorded cursor/key frame against
 the gameplay clock. This works independently of X11/Wayland global input APIs;
