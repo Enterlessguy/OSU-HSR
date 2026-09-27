@@ -34,3 +34,103 @@ jobs:
           if ($boundary -ne 'research=True;login=False;submission=False') { throw 'Research boundary disabled' }
           dotnet 'osu.Desktop/bin/Release/net8.0/osu!.dll' --verify-research-mapping-depth
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          dotnet 'osu.Desktop/bin/Release/net8.0/osu!.dll' --verify-research-trace-input
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install X11 smoke dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libx11-6 xvfb xauth openbox weston libwayland-client0 libegl1 libgl1-mesa-dri mesa-vulkan-drivers libvulkan1 libpulse0 libasound2t64
+          for script in research/setup-research.sh research/build-research.sh research/run-dev-build.sh; do bash -n "$script"; done
+      - name: Install Python requirements
+        run: |
+          python -m pip install --upgrade 'pip>=26.2' setuptools
+          python -m pip install -r research/human-sim/requirements-release.txt
+          python -m pip install --no-deps --no-build-isolation -e research/human-sim
+      - name: Tests and public-source scan
+        run: |
+          python -m pytest research/human-sim/tests -q
+          python research/human-sim/scripts/check_open_source_release.py --strict --history
+      - name: Build Linux research client and tools
+        run: |
+          dotnet build osu.Desktop/osu.Desktop.csproj -c Release -p:HumanSimResearchBuild=true
+          dotnet build research/HumanSim.MapExporter/HumanSim.MapExporter.csproj -c Release -p:HumanSimResearchBuild=true
+          dotnet build research/HumanSim.ReplayExtractor/HumanSim.ReplayExtractor.csproj -c Release -p:HumanSimResearchBuild=true
+          dotnet build research/HumanSim.Runner/HumanSim.Runner.csproj -c Release -p:HumanSimResearchBuild=true
+          boundary=$(dotnet 'osu.Desktop/bin/Release/net8.0/osu!.dll' --print-research-boundary)
+          test "$boundary" = 'research=True;login=False;submission=False'
+          dotnet 'osu.Desktop/bin/Release/net8.0/osu!.dll' --verify-research-mapping-depth
+      - name: Verify private trace delivery for X11 and Wayland
+        run: |
+          dotnet 'osu.Desktop/bin/Release/net8.0/osu!.dll' --verify-research-trace-input
+          XDG_SESSION_TYPE=x11 dotnet research/HumanSim.Runner/bin/Release/net8.0/HumanSim.Runner.dll --verify-input-backend
+          XDG_SESSION_TYPE=wayland WAYLAND_DISPLAY=wayland-0 dotnet research/HumanSim.Runner/bin/Release/net8.0/HumanSim.Runner.dll --verify-input-backend
+      - name: Start the native research client on X11 and Wayland
+        run: bash research/test-linux-desktop.sh "$GITHUB_WORKSPACE/osu.Desktop/bin/Release/net8.0/osu!.dll"
+
+  arch-package:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install Git before checkout
+        run: pacman -Syu --noconfirm --needed git
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Install Arch build and runtime dependencies
+        run: |
+          pacman -S --needed --noconfirm base-devel dotnet-sdk-8.0 git namcap ffmpeg alsa-lib fontconfig freetype2 libglvnd libpng libx11 libxcursor libxi libxinerama libxrandr libxss libxkbcommon libpulse zlib python python-pytest python-matplotlib python-numpy python-pandas python-pillow python-pyarrow python-polars python-scikit-learn python-scipy python-pydantic python-joblib
+          useradd --create-home builder
+          mkdir -p /tmp/hsr-aur
+          cp packaging/arch/PKGBUILD packaging/arch/.SRCINFO packaging/arch/collect-nuget-licenses.py packaging/arch/human-sim-wrapper packaging/arch/hsr-launcher packaging/arch/hsr-map-exporter packaging/arch/hsr-replay-extractor packaging/arch/intelligence-database-hsr.desktop /tmp/hsr-aur/
+          chown -R builder:builder /tmp/hsr-aur
+      - name: Build and inspect the package as an unprivileged user
+        run: |
+          runuser -u builder -- bash -lc 'cd /tmp/hsr-aur && makepkg --printsrcinfo | diff -u .SRCINFO -'
+          # Validate this exact checkout even before its release pin is published.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          runuser -u builder -- git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          # Manual runs validate the actual public recipe pin; push/PR runs test the checkout.
+          if [ "$GITHUB_EVENT_NAME" != 'workflow_dispatch' ]; then
+            sed -i "s@https://github.com/Enterlessguy/OSU-HSR.git#commit=[a-f0-9]*@file://$GITHUB_WORKSPACE#commit=$GITHUB_SHA@" /tmp/hsr-aur/PKGBUILD
+          fi
+          runuser -u builder -- bash -lc 'cd /tmp/hsr-aur && makepkg --noconfirm --cleanbuild'
+          runuser -u builder -- bash -lc 'cd /tmp/hsr-aur && namcap PKGBUILD *.pkg.tar.zst' > /tmp/hsr-aur/namcap.txt
+          cat /tmp/hsr-aur/namcap.txt
+          if grep -q ' E:' /tmp/hsr-aur/namcap.txt; then exit 1; fi
+          sha256sum /tmp/hsr-aur/*.pkg.tar.zst > /tmp/hsr-aur/SHA256SUMS
+          pacman -U --noconfirm /tmp/hsr-aur/*.pkg.tar.zst
+          pacman -Ql intelligence-database-hsr > /tmp/hsr-aur/package-files.txt
+          runuser -u builder -- intelligence-database-hsr --diagnostics
+          runuser -u builder -- hsr-map-exporter --help
+          runuser -u builder -- hsr-replay-extractor --help
+          runuser -u builder -- python "$GITHUB_WORKSPACE/research/verify-installed-planner.py" '/usr/lib/intelligence-database-hsr'
+      - name: Verify the installed desktop package on X11 and Wayland
+        run: |
+          pacman -S --needed --noconfirm xorg-server-xvfb xorg-xauth openbox weston mesa vulkan-swrast
+          runuser -u builder -- bash "$GITHUB_WORKSPACE/research/test-linux-desktop.sh" '/usr/lib/intelligence-database-hsr/osu.Desktop/bin/Release/net8.0/osu!.dll'
+      - name: Verify package removal
+        run: |
+          pacman -R --noconfirm intelligence-database-hsr
+          test ! -e /usr/bin/intelligence-database-hsr
+          test ! -e /usr/lib/intelligence-database-hsr
+      - uses: actions/upload-artifact@v4
+        with:
+          name: intelligence-database-hsr-arch-x86_64
+          path: |
+            /tmp/hsr-aur/*.pkg.tar.zst
+            /tmp/hsr-aur/SHA256SUMS
+            /tmp/hsr-aur/package-files.txt
+            /tmp/hsr-aur/namcap.txt

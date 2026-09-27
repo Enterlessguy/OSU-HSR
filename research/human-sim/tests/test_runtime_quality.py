@@ -32,9 +32,30 @@ def test_clean_runtime_telemetry_is_accepted():
     assert assessment["accepted"]
 
 
+def test_client_timeline_accounting_does_not_claim_windows_latency_calibration():
+    telemetry = {"schema_version": 1, "kind": "runtime_telemetry", "status": "completed",
+                 "input_backend": "research-client", "planned_frames": 1000,
+                 "client_consumed_frames": 1000, "delivered_frames": 1000,
+                 "heartbeat_count": 100, "heartbeat_max_gap_ms": 60}
+    assessment = assess_runtime_quality(telemetry)
+    assert assessment["status"] == "not_validated"
+    assert assessment["classification"] == "client-timeline-complete/not-os-dispatch-calibrated"
+    assert not assessment["accepted"]
+    assert assess_runtime_quality({**telemetry, "client_consumed_frames": 999})["status"] == "invalid"
+    assert assess_runtime_quality({**telemetry, "heartbeat_max_gap_ms": 5000})["status"] == "invalid"
+
+
 def test_inline_json_runtime_telemetry_is_accepted():
     assessment = assess_runtime_quality(json.dumps(_clean()))
     assert assessment["status"] == "clean"
+
+
+def test_x11_dispatch_is_not_marked_calibrated_by_windows_thresholds():
+    assessment = assess_runtime_quality(_clean(input_backend="x11-xtest"))
+    assert assessment["status"] == "not_validated"
+    assert assessment["classification"] == "runtime-not-calibrated"
+    assert not assessment["accepted"]
+    assert any("no platform-specific timing calibration" in reason for reason in assessment["reasons"])
 
 
 def test_latency_outlier_is_degraded_and_raw_telemetry_is_preserved():

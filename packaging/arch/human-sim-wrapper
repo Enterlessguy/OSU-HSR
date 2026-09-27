@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+app_root=/usr/lib/intelligence-database-hsr
+export PYTHONPATH="$app_root/research/human-sim/src${PYTHONPATH:+:$PYTHONPATH}"
+exec /usr/bin/python -m human_sim "$@"

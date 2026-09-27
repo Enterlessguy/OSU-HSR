@@ -1,0 +1,136 @@
+pkgname=intelligence-database-hsr
+pkgver=0.1.2
+pkgrel=1
+pkgdesc='Offline osu!lazer research build with visibly synthetic HSR traces'
+arch=('x86_64')
+url='https://github.com/Enterlessguy/OSU-HSR'
+license=('MIT' 'LGPL-2.1-or-later' 'LicenseRef-BASS' 'LicenseRef-BASSmix' 'LicenseRef-BASS-FX')
+options=('!debug' '!strip')
+depends=(
+  'alsa-lib'
+  'bash'
+  'dotnet-runtime-8.0'
+  'ffmpeg'
+  'fontconfig'
+  'freetype2'
+  'libglvnd'
+  'libpng'
+  'libx11'
+  'libxcursor'
+  'libxi'
+  'libxinerama'
+  'libxrandr'
+  'libxss'
+  'libxkbcommon'
+  'libpulse'
+  'wayland'
+  'python>=3.12'
+  'python-matplotlib'
+  'python-numpy'
+  'python-pandas'
+  'python-pillow'
+  'python-pyarrow'
+  'python-polars'
+  'python-scikit-learn'
+  'python-scipy'
+  'python-pydantic'
+  'python-joblib'
+  'zlib'
+)
+makedepends=('dotnet-sdk-8.0' 'git')
+checkdepends=('python-pytest')
+source=("${pkgname}::git+https://github.com/Enterlessguy/OSU-HSR.git#commit=632f100ae008b29eb00d8498ff3042e1cfe58a25"
+        'https://ffmpeg.org/releases/ffmpeg-4.3.3.tar.xz'
+        'https://www.un4seen.com/files/z/0/bass_fx24-linux.zip')
+sha256sums=('SKIP'
+            '9f0a68fbd74feb4e50dc220bddd59d84626774a53687fb737806ae00e5c6e9e6'
+            '1ee97610bc2768357c4c344c0d7a058ac95edf51804c391fdcf7644762bd413b')
+noextract=('bass_fx24-linux.zip')
+
+build() {
+  local _source="$srcdir/$pkgname"
+  cd "$_source"
+  export DOTNET_CLI_HOME="$srcdir/dotnet-home"
+  export NUGET_PACKAGES="$srcdir/nuget-packages"
+  export DOTNET_CLI_TELEMETRY_OPTOUT=1
+
+  for project in osu.Desktop/osu.Desktop.csproj research/HumanSim.MapExporter/HumanSim.MapExporter.csproj research/HumanSim.ReplayExtractor/HumanSim.ReplayExtractor.csproj research/HumanSim.Runner/HumanSim.Runner.csproj; do
+    dotnet publish "$project" -c Release -r linux-x64 --self-contained false -p:HumanSimResearchBuild=true --configfile NuGet.Config
+  done
+}
+
+check() {
+  local _source="$srcdir/$pkgname"
+  cd "$_source"
+  python -m pytest research/human-sim/tests -q
+  test "$(dotnet 'osu.Desktop/bin/Release/net8.0/linux-x64/publish/osu!.dll' --print-research-boundary)" = 'research=True;login=False;submission=False'
+  dotnet 'osu.Desktop/bin/Release/net8.0/linux-x64/publish/osu!.dll' --verify-research-trace-input
+  dotnet research/HumanSim.Runner/bin/Release/net8.0/linux-x64/publish/HumanSim.Runner.dll --verify-runner-contracts
+}
+
+package() {
+  local _source="$srcdir/$pkgname"
+  local _install_root="$pkgdir/usr/lib/$pkgname"
+  cd "$_source"
+
+  install -d "$_install_root"
+  install -Dm644 global.json "$_install_root/global.json"
+  install -Dm644 LICENCE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 packaging/arch/BASS-LICENSE.txt "$pkgdir/usr/share/licenses/$pkgname/BASS-LICENSE.txt"
+  install -Dm644 packaging/arch/BASSmix-LICENSE.txt "$pkgdir/usr/share/licenses/$pkgname/BASSmix-LICENSE.txt"
+  install -Dm644 packaging/arch/BASS-FX-LICENSE.txt "$pkgdir/usr/share/licenses/$pkgname/BASS-FX-LICENSE.txt"
+  install -Dm644 packaging/arch/NATIVE_DEPENDENCIES.md "$pkgdir/usr/share/licenses/$pkgname/NATIVE_DEPENDENCIES.md"
+  install -Dm644 "$srcdir/ffmpeg-4.3.3/COPYING.LGPLv2.1" "$pkgdir/usr/share/licenses/$pkgname/FFmpeg-LGPL-2.1.txt"
+  install -Dm644 "$srcdir/ffmpeg-4.3.3.tar.xz" "$pkgdir/usr/share/doc/$pkgname/native-source/ffmpeg-4.3.3.tar.xz"
+  install -Dm644 "$srcdir/bass_fx24-linux.zip" "$pkgdir/usr/share/doc/$pkgname/vendor/bass_fx24-linux.zip"
+
+  install -d "$_install_root/osu.Desktop/bin/Release/net8.0"
+  cp -a osu.Desktop/bin/Release/net8.0/linux-x64/publish/. "$_install_root/osu.Desktop/bin/Release/net8.0/"
+
+  install -d "$_install_root/research/HumanSim.MapExporter/bin/Release/net8.0"
+  cp -a research/HumanSim.MapExporter/HumanSim.MapExporter.csproj "$_install_root/research/HumanSim.MapExporter/"
+  cp -a research/HumanSim.MapExporter/bin/Release/net8.0/linux-x64/publish/. "$_install_root/research/HumanSim.MapExporter/bin/Release/net8.0/"
+
+  install -d "$_install_root/research/HumanSim.Runner/bin/Release/net8.0"
+  cp -a research/HumanSim.Runner/HumanSim.Runner.csproj "$_install_root/research/HumanSim.Runner/"
+  cp -a research/HumanSim.Runner/bin/Release/net8.0/linux-x64/publish/. "$_install_root/research/HumanSim.Runner/bin/Release/net8.0/"
+
+  install -d "$_install_root/research/HumanSim.ReplayExtractor/bin/Release/net8.0"
+  cp -a research/HumanSim.ReplayExtractor/HumanSim.ReplayExtractor.csproj "$_install_root/research/HumanSim.ReplayExtractor/"
+  cp -a research/HumanSim.ReplayExtractor/bin/Release/net8.0/linux-x64/publish/. "$_install_root/research/HumanSim.ReplayExtractor/bin/Release/net8.0/"
+
+  # Keep tool-local dependency paths while storing identical runtime files once.
+  local shared tool candidate
+  for shared in "$_install_root/osu.Desktop/bin/Release/net8.0/"*; do
+    [[ -f "$shared" && ! -L "$shared" ]] || continue
+    for tool in HumanSim.MapExporter HumanSim.ReplayExtractor HumanSim.Runner; do
+      candidate="$_install_root/research/$tool/bin/Release/net8.0/${shared##*/}"
+      if [[ -f "$candidate" && ! -L "$candidate" ]] && cmp -s -- "$shared" "$candidate"; then
+        ln -sf -- "$(realpath --relative-to="${candidate%/*}" "$shared")" "$candidate"
+      fi
+    done
+  done
+
+  install -d "$_install_root/research"
+  install -d "$_install_root/research/human-sim/models/experimental"
+  cp -a research/human-sim/src "$_install_root/research/human-sim/"
+  install -Dm644 research/human-sim/models/experimental/seed101-math-residual-g100-v4.json "$_install_root/research/human-sim/models/experimental/seed101-math-residual-g100-v4.json"
+  find "$_install_root/research/human-sim/src" -type d -name __pycache__ -exec rm -r -- '{}' +
+  install -d "$_install_root/research/human-sim/.venv/bin"
+  ln -s /usr/bin/human-sim "$_install_root/research/human-sim/.venv/bin/human-sim"
+
+  install -Dm755 packaging/arch/human-sim-wrapper "$pkgdir/usr/bin/human-sim"
+  install -Dm755 packaging/arch/hsr-map-exporter "$pkgdir/usr/bin/hsr-map-exporter"
+  install -Dm755 packaging/arch/hsr-replay-extractor "$pkgdir/usr/bin/hsr-replay-extractor"
+  install -Dm755 packaging/arch/hsr-launcher "$pkgdir/usr/bin/intelligence-database-hsr"
+  install -Dm644 packaging/arch/intelligence-database-hsr.desktop "$pkgdir/usr/share/applications/intelligence-database-hsr.desktop"
+  install -Dm644 assets/lazer.png "$pkgdir/usr/share/pixmaps/intelligence-database-hsr.png"
+
+  python packaging/arch/collect-nuget-licenses.py \
+    "$pkgdir/usr/share/licenses/$pkgname/third-party" \
+    "$srcdir/nuget-packages" \
+    "$_install_root/osu.Desktop/bin/Release/net8.0" \
+    "$_install_root/research/HumanSim.MapExporter/bin/Release/net8.0" \
+    "$_install_root/research/HumanSim.ReplayExtractor/bin/Release/net8.0" \
+    "$_install_root/research/HumanSim.Runner/bin/Release/net8.0"
+}

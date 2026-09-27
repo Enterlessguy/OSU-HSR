@@ -3,10 +3,12 @@ using System.Globalization;
 using System.IO.Compression;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using HumanSim.Transport;
 
 namespace HumanSim.Runner;
 
@@ -27,15 +29,40 @@ internal static class Program
             Console.WriteLine($"planner_version={plannerVersion}");
             return 0;
         }
+        if (args.Length == 1 && args[0].Equals("--verify-runner-contracts", StringComparison.OrdinalIgnoreCase))
+            return await verifyRunnerContracts().ConfigureAwait(false);
+        if (args.Length == 1 && args[0].Equals("--verify-input-backend", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                    Console.WriteLine("backend=windows-sendinput;research-build-only=true");
+                else if (OperatingSystem.IsLinux())
+                {
+                    Console.WriteLine("backend=research-client;display=x11-or-wayland;global-input=false;privileged-device-access=false");
+                }
+                else
+                    throw new PlatformNotSupportedException("The HSR runner supports Windows and Linux research clients.");
+                return 0;
+            }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine(exception.Message);
+                return 1;
+            }
+        }
         StreamWriter? logWriter = null;
         try
         {
             Options options = Options.Parse(args);
             int verifyIndex = Array.IndexOf(args, "--verify-plan");
+            bool clientPlayback = OperatingSystem.IsLinux() && !options.TimingOnly;
+            if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+                throw new PlatformNotSupportedException("The HSR runner supports Windows and Linux research clients.");
             if (verifyIndex >= 0)
             {
                 string hash = args[verifyIndex + 1];
-                string storage = options.OsuStoragePath ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "osu-development", "files");
+                string storage = options.OsuStoragePath ?? defaultOsuStoragePath();
                 if (hash.Length != 64 || Convert.FromHexString(hash).Length != 32)
                     throw new InvalidDataException("--verify-plan requires a beatmap SHA-256");
                 string map = Path.Combine(storage, hash[..1], hash[..2], hash);
@@ -71,6 +98,7 @@ internal static class Program
                     ["HUMAN_SIM_PIPE"] = pipeName,
                     ["HUMAN_SIM_RUN_TOKEN"] = token,
                     ["HUMAN_SIM_SELECTION_PIPE"] = selectionPipeName,
+                    ["HUMAN_SIM_INPUT_BACKEND"] = clientPlayback ? "research-client" : "windows-sendinput",
                 },
             }) ?? throw new InvalidOperationException("Research client did not start.");
 
@@ -118,6 +146,7 @@ internal static class Program
                     using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(options.TimeoutSeconds));
                     StreamReader? reader = null;
                     StreamWriter? writer = null;
+                    string? payloadPath = null;
                     try
                     {
                         reader = new StreamReader(pipe, leaveOpen: true);
@@ -143,7 +172,30 @@ internal static class Program
                         rejection = "no trace was supplied or generated";
                     if (rejection == null)
                         rejection = validateTrace(hello, trace!.Header);
-                    await writer.WriteLineAsync(JsonSerializer.Serialize(new Acknowledgement(rejection == null, token, rejection))).ConfigureAwait(false);
+                    string? payloadHash = null;
+                    if (rejection == null && clientPlayback)
+                    {
+                        payloadPath = Path.Combine(Path.GetTempPath(), $"hsr-trace-{Guid.NewGuid():N}.json.gz");
+                        var payload = new ResearchTraceData
+                        {
+                            RunToken = token, BeatmapSha256 = hello.BeatmapSha256, ClockRate = hello.ClockRate,
+                            TimelineStartEffectiveMs = trace!.Header.TimelineStartEffectiveMs,
+                            ExecutionMode = trace.Header.ExecutionMode,
+                            LearnedSegments = trace.Header.ExecutionLearnedSegmentCount,
+                            ChangedSamples = trace.Header.ExecutionChangedSampleCount,
+                            FallbackSegments = trace.Header.ExecutionFallbackSegmentCount,
+                            Frames = trace.Frames.Select(frame => new ResearchTraceFrame
+                            { TimeUs = frame.TimeUs, X = frame.X, Y = frame.Y, K1 = frame.K1, K2 = frame.K2 }).ToList(),
+                        };
+                        payload.Validate(token, hello.BeatmapSha256, hello.ClockRate);
+                        payloadHash = payload.Write(payloadPath);
+                    }
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(new
+                    {
+                        accepted = rejection == null, run_token = token, reason = rejection,
+                        input_backend = clientPlayback ? "research-client" : "windows-sendinput",
+                        trace_path = payloadPath, trace_sha256 = payloadHash,
+                    })).ConfigureAwait(false);
                     if (rejection != null)
                     {
                         Console.WriteLine($"Research client rejected: {rejection}");
@@ -166,7 +218,7 @@ internal static class Program
                     process.Refresh();
                     nint window = 0;
                     WindowGuard guard = default;
-                    if (!options.TimingOnly)
+                    if (!options.TimingOnly && !clientPlayback)
                     {
                         window = process.MainWindowHandle;
                         if (window == 0) throw new InvalidOperationException("Research client has no main window.");
@@ -175,14 +227,17 @@ internal static class Program
                         Console.WriteLine($"Initial playfield transform: O=({hello.PlayfieldOrigin[0]:F2},{hello.PlayfieldOrigin[1]:F2}) X=({hello.PlayfieldXAxis[0]:F2},{hello.PlayfieldXAxis[1]:F2}) Y=({hello.PlayfieldYAxis[0]:F2},{hello.PlayfieldYAxis[1]:F2})");
                         Console.WriteLine($"Final playfield transform: O=({start.PlayfieldOrigin[0]:F2},{start.PlayfieldOrigin[1]:F2}) X=({start.PlayfieldXAxis[0]:F2},{start.PlayfieldXAxis[1]:F2}) Y=({start.PlayfieldYAxis[0]:F2},{start.PlayfieldYAxis[1]:F2})");
                         guard.ValidatePlayfield(start);
-                        Console.WriteLine($"Research window: {guard.ClientRect.Width}x{guard.ClientRect.Height} physical pixels ({guard.ClientRect.AspectRatio:F4}:1); virtual screen: {guard.VirtualScreen.Width}x{guard.VirtualScreen.Height}; DPI {guard.Dpi}.");
+                        Console.WriteLine($"Research window: {guard.ClientRect.Width}x{guard.ClientRect.Height} desktop pixels ({guard.ClientRect.AspectRatio:F4}:1); virtual screen: {guard.VirtualScreen.Width}x{guard.VirtualScreen.Height}; scale {guard.Dpi / 96.0:F3}.");
                     }
                     var connection = new ConnectionMonitor(reader, token, start, !options.DisableClockFit);
                     var transformHolder = new TransformHolder(PlayfieldTransform.FromStart(start));
-                    connection.AttachTransform(transformHolder, guard, options.TimingOnly);
+                    connection.AttachTransform(transformHolder, guard, options.TimingOnly || clientPlayback);
                     connection.Start();
                     Console.WriteLine($"Gameplay clock at launch: {start.GameplayClockTimeMs:F3} effective ms at {hello.ClockRate:F3}x; trace timeline starts at {selectedTrace.Header.TimelineStartEffectiveMs:F3} ms.");
-                    execute(selectedTrace, hello, start, process, window, guard, options, connection, transformHolder);
+                    if (clientPlayback)
+                        await monitorClientPlayback(selectedTrace, process, connection).ConfigureAwait(false);
+                    else
+                        execute(selectedTrace, hello, start, process, window, guard, options, connection, transformHolder);
                     // Best-effort completion notification. If the client has
                     // already dropped the connection (user quit, map ended,
                     // harness closed), a completed run must not fail.
@@ -209,6 +264,7 @@ internal static class Program
                     }
                     finally
                     {
+                        if (payloadPath != null) File.Delete(payloadPath);
                         try { writer?.Dispose(); } catch (IOException) { }
                         try { reader?.Dispose(); } catch (IOException) { }
                     }
@@ -263,6 +319,35 @@ internal static class Program
         return null;
     }
 
+    private static async Task monitorClientPlayback(Trace trace, Process process, ConnectionMonitor connection)
+    {
+        Console.WriteLine($"Research client playback: {trace.Frames.Count} frames; learned segments={trace.Header.ExecutionLearnedSegmentCount}; changed samples={trace.Header.ExecutionChangedSampleCount}; fallback segments={trace.Header.ExecutionFallbackSegmentCount}.");
+        long started = Stopwatch.GetTimestamp();
+        double maximumSeconds = trace.Frames[^1].TimeUs / 1_000_000.0 + 120;
+        while (!connection.ClientPlaybackComplete)
+        {
+            if (process.HasExited) throw new InvalidOperationException("Research client exited during synthetic playback.");
+            connection.EnsureAlive();
+            if (Stopwatch.GetElapsedTime(started).TotalSeconds > maximumSeconds)
+                throw new TimeoutException("Research client did not finish the synthetic trace.");
+            await Task.Delay(10).ConfigureAwait(false);
+        }
+        if (connection.ClientExpectedFrames != trace.Frames.Count || connection.ClientConsumedFrames != trace.Frames.Count)
+            throw new InvalidDataException("Research client skipped trace frames; delivery parity failed.");
+        Console.WriteLine($"Runtime telemetry: {JsonSerializer.Serialize(new
+        {
+            schema_version = 1, kind = "runtime_telemetry", status = "completed", timing_only = false,
+            input_backend = "research-client", planned_frames = trace.Frames.Count,
+            client_consumed_frames = connection.ClientConsumedFrames, delivered_frames = connection.ClientConsumedFrames,
+            learned_segment_count = trace.Header.ExecutionLearnedSegmentCount,
+            changed_sample_count = trace.Header.ExecutionChangedSampleCount,
+            fallback_segment_count = trace.Header.ExecutionFallbackSegmentCount,
+            heartbeat_count = connection.HeartbeatCount,
+            heartbeat_max_gap_ms = connection.HeartbeatMaxGapMs,
+            delivery_clock = "gameplay-frame-stability", os_dispatch_calibrated = false,
+        })}");
+    }
+
     private static string? validateTrace(Handshake h, TraceHeader t)
     {
         if (!StringComparer.OrdinalIgnoreCase.Equals(h.BeatmapSha256, t.BeatmapSha256)) return "beatmap hash mismatch";
@@ -298,7 +383,7 @@ internal static class Program
             ? findWorkspaceRoot(AppContext.BaseDirectory)
             : Path.GetFullPath(options.WorkspaceRoot);
         string storageRoot = options.OsuStoragePath == null
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "osu-development", "files")
+            ? defaultOsuStoragePath()
             : Path.GetFullPath(options.OsuStoragePath);
         string sourcePath = Path.Combine(storageRoot, hash[..1], hash[..2], hash);
         if (!File.Exists(sourcePath))
@@ -316,8 +401,14 @@ internal static class Program
             effectiveOptions = options with { SampleRateHz = 1000 };
         }
 
-        string exporter = Path.Combine(workspaceRoot, "research", "HumanSim.MapExporter", "bin", "Debug", "net8.0", "HumanSim.MapExporter.exe");
-        string planner = Path.Combine(workspaceRoot, "research", "human-sim", ".venv", "Scripts", "human-sim.exe");
+        bool windows = OperatingSystem.IsWindows();
+        string platformSuffix = windows ? ".exe" : string.Empty;
+        string configuration = AppContext.BaseDirectory.Contains($"{Path.DirectorySeparatorChar}Release{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase)
+            ? "Release"
+            : "Debug";
+        string exporter = Path.Combine(workspaceRoot, "research", "HumanSim.MapExporter", "bin", configuration, "net8.0", $"HumanSim.MapExporter{platformSuffix}");
+        string planner = Path.Combine(workspaceRoot, "research", "human-sim", ".venv", windows ? "Scripts" : "bin",
+            windows ? "human-sim.exe" : "human-sim");
         if (!File.Exists(exporter))
             throw new FileNotFoundException("HumanSim.MapExporter has not been built", exporter);
         if (!File.Exists(planner))
@@ -327,7 +418,7 @@ internal static class Program
         string modeKey = options.AutoPlanMode == "perfect" ? "perfect" : "profile";
         string runKey = automaticRunKey(hash, mods, clockRate, effectiveOptions);
         string outputDirectory = options.OutputDirectory == null
-            ? Path.Combine(workspaceRoot, "research", "human-sim", "output", "auto")
+            ? defaultAutoOutputDirectory(workspaceRoot)
             : Path.GetFullPath(options.OutputDirectory);
         Directory.CreateDirectory(outputDirectory);
         string mapPlanPath = Path.Combine(outputDirectory, $"{runKey}.map.ndjson.gz");
@@ -628,9 +719,34 @@ internal static class Program
         throw new DirectoryNotFoundException("Unable to locate the human-simulator workspace root; pass --workspace-root explicitly.");
     }
 
+    private static string defaultOsuStoragePath()
+    {
+        if (OperatingSystem.IsWindows())
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "osu-development", "files");
+
+        string? configuredDataHome = Environment.GetEnvironmentVariable("XDG_DATA_HOME");
+        string dataHome = !string.IsNullOrWhiteSpace(configuredDataHome) && Path.IsPathFullyQualified(configuredDataHome)
+            ? configuredDataHome
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share");
+        return Path.Combine(dataHome, "osu-development", "files");
+    }
+
+    private static string defaultAutoOutputDirectory(string workspaceRoot)
+    {
+        if (OperatingSystem.IsWindows())
+            return Path.Combine(workspaceRoot, "research", "human-sim", "output", "auto");
+
+        string? configuredCacheHome = Environment.GetEnvironmentVariable("XDG_CACHE_HOME");
+        string cacheHome = !string.IsNullOrWhiteSpace(configuredCacheHome) && Path.IsPathFullyQualified(configuredCacheHome)
+            ? configuredCacheHome
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache");
+        return Path.Combine(cacheHome, "intelligence-database-hsr", "auto");
+    }
+
     private static async Task runTool(string label, string executable, string workingDirectory, IEnumerable<string> arguments, int timeoutSeconds, string? pythonSource = null)
     {
-        var startInfo = new ProcessStartInfo(executable)
+        bool assembly = Path.GetExtension(executable).Equals(".dll", StringComparison.OrdinalIgnoreCase);
+        var startInfo = new ProcessStartInfo(assembly ? "dotnet" : executable)
         {
             WorkingDirectory = workingDirectory,
             UseShellExecute = false,
@@ -638,6 +754,8 @@ internal static class Program
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
+        if (assembly)
+            startInfo.ArgumentList.Add(executable);
         foreach (string argument in arguments)
             startInfo.ArgumentList.Add(argument);
         if (pythonSource != null)
@@ -694,19 +812,21 @@ internal static class Program
         {
             // Windows default timer resolution (~15.6 ms) makes Thread.Sleep
             // overshoot badly. 1 ms resolution keeps the wait loop honest.
-            timerResolutionActive = !options.DisableTimerResolution && Native.timeBeginPeriod(1) == 0;
+        timerResolutionActive = OperatingSystem.IsWindows() && !options.DisableTimerResolution && Native.timeBeginPeriod(1) == 0;
 
             // A real-time producer inside a normal-priority process can still be
             // preempted for up to a scheduling quantum (~15 ms), which is the
             // ~10-13 ms dispatch tail. High priority class reduces that window.
-            Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High;
+            if (OperatingSystem.IsWindows())
+                Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High;
 
             // This is a real-time producer. If Windows stalls it briefly, replaying
             // every obsolete 2 ms cursor sample makes the queue fall progressively
             // further behind. Run the scheduler at high priority and collapse only
             // overdue frames whose key state is unchanged. Key transitions are never
             // skipped, and the most recent cursor position is retained.
-            Thread.CurrentThread.Priority = ThreadPriority.Highest;
+            if (OperatingSystem.IsWindows())
+                Thread.CurrentThread.Priority = ThreadPriority.Highest;
             for (int i = 0; i < dispatchFrames.Count; i++)
             {
                 TraceFrame f = dispatchFrames[i];
@@ -784,7 +904,7 @@ internal static class Program
                 if (f.TimeUs >= nextTelemetryUs)
                 {
                     ClockSyncSnapshot sync = connection.Snapshot();
-                    Console.WriteLine($"Timing at {f.TimeUs / 1_000_000.0:F1}s: live-clock correction {sync.CorrectionMs:+0.000;-0.000;0.000} ms; dispatch p95 {dispatchLatenessUs.Percentile(0.95):F1} us, max {dispatchLatenessUs.Max:F1} us; key-down p95 {keyDownLatenessUs.Percentile(0.95):F1} us; SendInput p95 {sendDurationsUs.Percentile(0.95):F1} us; deadline-coalesced {deadlineCoalescedFrames:N0} dispatch frames.");
+                    Console.WriteLine($"Timing at {f.TimeUs / 1_000_000.0:F1}s: live-clock correction {sync.CorrectionMs:+0.000;-0.000;0.000} ms; dispatch p95 {dispatchLatenessUs.Percentile(0.95):F1} us, max {dispatchLatenessUs.Max:F1} us; key-down p95 {keyDownLatenessUs.Percentile(0.95):F1} us; {Input.BackendName} dispatch p95 {sendDurationsUs.Percentile(0.95):F1} us; deadline-coalesced {deadlineCoalescedFrames:N0} dispatch frames.");
                     do nextTelemetryUs += 5_000_000; while (nextTelemetryUs <= f.TimeUs);
                 }
             }
@@ -792,25 +912,29 @@ internal static class Program
         }
         finally
         {
-            if (timerResolutionActive)
+            if (OperatingSystem.IsWindows() && timerResolutionActive)
                 Native.timeEndPeriod(1);
-            Thread.CurrentThread.Priority = originalPriority;
+            if (OperatingSystem.IsWindows())
+                Thread.CurrentThread.Priority = originalPriority;
             Input.ReleaseKey(options.LeftKey);
             Input.ReleaseKey(options.RightKey);
             if (dispatchLatenessUs.Count > 0)
-                Console.WriteLine($"Dispatch lateness (us): all p50={dispatchLatenessUs.Percentile(0.50):F1}, p95={dispatchLatenessUs.Percentile(0.95):F1}, p99={dispatchLatenessUs.Percentile(0.99):F1}, max={dispatchLatenessUs.Max:F1}; key-down p95={keyDownLatenessUs.Percentile(0.95):F1}, max={keyDownLatenessUs.Max:F1}; SendInput p95={sendDurationsUs.Percentile(0.95):F1}, max={sendDurationsUs.Max:F1}; cadence-skipped={cadenceSkippedFrames:N0}, deadline-coalesced={deadlineCoalescedFrames:N0}, delivered={dispatchLatenessUs.Count:N0}.");
+                Console.WriteLine($"Dispatch lateness (us): all p50={dispatchLatenessUs.Percentile(0.50):F1}, p95={dispatchLatenessUs.Percentile(0.95):F1}, p99={dispatchLatenessUs.Percentile(0.99):F1}, max={dispatchLatenessUs.Max:F1}; key-down p95={keyDownLatenessUs.Percentile(0.95):F1}, max={keyDownLatenessUs.Max:F1}; {Input.BackendName} dispatch p95={sendDurationsUs.Percentile(0.95):F1}, max={sendDurationsUs.Max:F1}; cadence-skipped={cadenceSkippedFrames:N0}, deadline-coalesced={deadlineCoalescedFrames:N0}, delivered={dispatchLatenessUs.Count:N0}.");
             Console.WriteLine($"Runtime telemetry: {JsonSerializer.Serialize(new
             {
                 schema_version = 1,
                 kind = "runtime_telemetry",
                 status = executionCompleted ? "completed" : "aborted",
                 timing_only = options.TimingOnly,
+                input_backend = Input.BackendId,
                 dispatch_p50_us = dispatchLatenessUs.Percentile(0.50),
                 dispatch_p95_us = dispatchLatenessUs.Percentile(0.95),
                 dispatch_p99_us = dispatchLatenessUs.Percentile(0.99),
                 dispatch_max_us = dispatchLatenessUs.Max,
                 key_down_p95_us = keyDownLatenessUs.Percentile(0.95),
                 key_down_max_us = keyDownLatenessUs.Max,
+                dispatch_backend_p95_us = sendDurationsUs.Percentile(0.95),
+                dispatch_backend_max_us = sendDurationsUs.Max,
                 send_input_p95_us = sendDurationsUs.Percentile(0.95),
                 send_input_max_us = sendDurationsUs.Max,
                 cadence_skipped_frames = cadenceSkippedFrames,
@@ -875,8 +999,127 @@ internal static class Program
 
     private static void ensureForeground(int processId)
     {
-        Native.GetWindowThreadProcessId(Native.GetForegroundWindow(), out uint pid);
-        if (pid != processId) throw new InvalidOperationException("Research client lost focus; run aborted.");
+        if (OperatingSystem.IsWindows())
+        {
+            Native.GetWindowThreadProcessId(Native.GetForegroundWindow(), out uint pid);
+            if (pid != processId) throw new InvalidOperationException("Research client lost focus; run aborted.");
+        }
+        else
+        {
+            throw new PlatformNotSupportedException("Global input guards apply only to Windows; Linux uses private client playback.");
+        }
+    }
+
+    private static async Task<int> verifyRunnerContracts()
+    {
+        try
+        {
+            string runToken = new('a', 64);
+            string executableHash = new('b', 64);
+            using Process process = Process.GetCurrentProcess();
+            var handshake = new Handshake
+            {
+                ProtocolVersion = protocolVersion,
+                Kind = "hello",
+                RunToken = runToken,
+                ProcessId = process.Id,
+                ExecutableSha256 = executableHash,
+                ClockRate = 1.0,
+                QpcFrequency = Stopwatch.Frequency,
+                PlayfieldOrigin = new[] { 0.0, 0.0 },
+                PlayfieldXAxis = new[] { 512.0, 0.0 },
+                PlayfieldYAxis = new[] { 0.0, 384.0 },
+            };
+            require(validateClient(handshake, process, runToken, executableHash) == null, "valid client handshake was rejected");
+            require(validateClient(new Handshake { ProtocolVersion = 2, Kind = "hello", RunToken = runToken, ProcessId = process.Id, ExecutableSha256 = executableHash, ClockRate = 1, QpcFrequency = Stopwatch.Frequency, PlayfieldOrigin = new[] { 0.0, 0.0 }, PlayfieldXAxis = new[] { 1.0, 0.0 }, PlayfieldYAxis = new[] { 0.0, 1.0 } }, process, runToken, executableHash) == "protocol mismatch", "protocol mismatch was accepted");
+            require(validateClient(handshake, process, new string('c', 64), executableHash) == "run-token mismatch", "mismatched token was accepted");
+            require(validateClient(new Handshake { ProtocolVersion = protocolVersion, Kind = "hello", RunToken = runToken, ProcessId = process.Id + 1, ExecutableSha256 = executableHash, ClockRate = 1, QpcFrequency = Stopwatch.Frequency, PlayfieldOrigin = new[] { 0.0, 0.0 }, PlayfieldXAxis = new[] { 1.0, 0.0 }, PlayfieldYAxis = new[] { 0.0, 1.0 } }, process, runToken, executableHash) == "client PID mismatch", "mismatched PID was accepted");
+            require(validateClient(new Handshake { ProtocolVersion = protocolVersion, Kind = "hello", RunToken = runToken, ProcessId = process.Id, ExecutableSha256 = new string('d', 64), ClockRate = 1, QpcFrequency = Stopwatch.Frequency, PlayfieldOrigin = new[] { 0.0, 0.0 }, PlayfieldXAxis = new[] { 1.0, 0.0 }, PlayfieldYAxis = new[] { 0.0, 1.0 } }, process, runToken, executableHash) == "executable hash mismatch", "mismatched executable hash was accepted");
+            require(validateClient(new Handshake { ProtocolVersion = protocolVersion, Kind = "hello", RunToken = runToken, ProcessId = process.Id, ExecutableSha256 = executableHash, ClockRate = 1, QpcFrequency = Stopwatch.Frequency + 1, PlayfieldOrigin = new[] { 0.0, 0.0 }, PlayfieldXAxis = new[] { 1.0, 0.0 }, PlayfieldYAxis = new[] { 0.0, 1.0 } }, process, runToken, executableHash) == "high-resolution clock mismatch", "mismatched clock was accepted");
+
+            var traceHeader = new TraceHeader
+            {
+                BeatmapSha256 = new string('e', 64),
+                BeatmapMd5 = "0123456789abcdef0123456789abcdef",
+                Mods = new[] { "HD" },
+                ClockRate = 1,
+            };
+            var mapHandshake = new Handshake
+            {
+                BeatmapSha256 = traceHeader.BeatmapSha256,
+                BeatmapMd5 = traceHeader.BeatmapMd5,
+                Mods = new[] { "HD" },
+                ClockRate = 1,
+            };
+            require(validateTrace(mapHandshake, traceHeader) == null, "valid trace/map identity was rejected");
+            require(validateTrace(new Handshake { BeatmapSha256 = new string('f', 64), BeatmapMd5 = traceHeader.BeatmapMd5, Mods = new[] { "HD" }, ClockRate = 1 }, traceHeader) == "beatmap hash mismatch", "map-hash mismatch was accepted");
+            require(validateTrace(new Handshake { BeatmapSha256 = traceHeader.BeatmapSha256, BeatmapMd5 = traceHeader.BeatmapMd5, Mods = Array.Empty<string>(), ClockRate = 1 }, traceHeader) == "active mods do not match trace", "mod mismatch was accepted");
+
+            Trace scheduleTrace = new()
+            {
+                Header = new TraceHeader { SampleRateHz = 1000 },
+                Frames = new[]
+                {
+                    new TraceFrame { TimeUs = 0, X = 0, Y = 0 },
+                    new TraceFrame { TimeUs = 1000, X = 1, Y = 0 },
+                    new TraceFrame { TimeUs = 1500, X = 2, Y = 0, K1 = true },
+                    new TraceFrame { TimeUs = 2000, X = 3, Y = 0 },
+                    new TraceFrame { TimeUs = 3000, X = 4, Y = 0, K2 = true },
+                    new TraceFrame { TimeUs = 3500, X = 5, Y = 0, K2 = false },
+                },
+            };
+            IReadOnlyList<TraceFrame> dispatched = selectDispatchFrames(scheduleTrace, 500);
+            long[] dispatchedTimes = dispatched.Select(frame => frame.TimeUs).ToArray();
+            require(dispatchedTimes.Contains(1500) && dispatchedTimes.Contains(2000), "cursor cadence dropped a key transition");
+            require(dispatchedTimes.Contains(3000) && dispatchedTimes.Contains(3500), "second-key transitions were dropped");
+            require(dispatchedTimes[^1] == 3500, "final frame was not retained");
+
+            await verifyCurrentUserPipe(runToken).ConfigureAwait(false);
+            Console.WriteLine("runner_contracts=passed; protocol=token,pid,hash,clock,map,mods; ipc=current-user-pipe; schedule=key-transitions,cadence,final-frame");
+            return 0;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"runner contract verification failed: {exception.Message}");
+            return 1;
+        }
+    }
+
+    private static async Task verifyCurrentUserPipe(string runToken)
+    {
+        string pipeName = $"osu-hsr-contract-{Guid.NewGuid():N}";
+        using var server = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+        Task<string?> clientExchange = Task.Run(async () =>
+        {
+            using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+            await client.ConnectAsync(5000).ConfigureAwait(false);
+            using var writer = new StreamWriter(client, leaveOpen: true) { AutoFlush = true };
+            using var reader = new StreamReader(client, leaveOpen: true);
+            await writer.WriteLineAsync(JsonSerializer.Serialize(new { protocol_version = protocolVersion, kind = "hello", run_token = runToken })).ConfigureAwait(false);
+            return await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        });
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await server.WaitForConnectionAsync(timeout.Token).ConfigureAwait(false);
+        using var serverReader = new StreamReader(server, leaveOpen: true);
+        using var serverWriter = new StreamWriter(server, leaveOpen: true) { AutoFlush = true };
+        using JsonDocument hello = JsonDocument.Parse(await serverReader.ReadLineAsync(timeout.Token).ConfigureAwait(false) ?? throw new InvalidDataException("pipe client sent no hello"));
+        JsonElement root = hello.RootElement;
+        require(root.GetProperty("protocol_version").GetInt32() == protocolVersion, "pipe protocol version mismatch");
+        require(root.GetProperty("kind").GetString() == "hello", "pipe hello kind mismatch");
+        require(fixedEquals(root.GetProperty("run_token").GetString() ?? string.Empty, runToken), "pipe token mismatch");
+        await serverWriter.WriteLineAsync(JsonSerializer.Serialize(new Acknowledgement(true, runToken, null))).ConfigureAwait(false);
+        string? acknowledgement = await clientExchange.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        using JsonDocument response = JsonDocument.Parse(acknowledgement ?? throw new InvalidDataException("pipe client received no acknowledgement"));
+        require(response.RootElement.GetProperty("accepted").GetBoolean(), "pipe acknowledgement was rejected");
+        require(fixedEquals(response.RootElement.GetProperty("run_token").GetString() ?? string.Empty, runToken), "pipe acknowledgement token mismatch");
+    }
+
+    private static void require(bool condition, string message)
+    {
+        if (!condition)
+            throw new InvalidOperationException(message);
     }
 
     private static string sha256(string path)
@@ -921,6 +1164,12 @@ internal sealed class TransformHolder
 
 internal sealed class ConnectionMonitor
 {
+    public bool ClientPlaybackComplete => Volatile.Read(ref clientPlaybackComplete);
+    public int ClientConsumedFrames => Volatile.Read(ref clientConsumedFrames);
+    public int ClientExpectedFrames => Volatile.Read(ref clientExpectedFrames);
+    private bool clientPlaybackComplete;
+    private int clientConsumedFrames;
+    private int clientExpectedFrames;
     private const int max_samples = 128;
     private const int min_fit_samples = 8;
 
@@ -997,6 +1246,16 @@ internal sealed class ConnectionMonitor
 
                 if (kind != "heartbeat")
                     throw new InvalidDataException("Malformed research message.");
+                if (message.RootElement.TryGetProperty("client_consumed_frames", out JsonElement consumed))
+                {
+                    int count = consumed.GetInt32();
+                    int expected = message.RootElement.GetProperty("client_expected_frames").GetInt32();
+                    if (count < ClientConsumedFrames || count > expected || expected < 0 || expected > ResearchTraceData.MaximumFrames)
+                        throw new InvalidDataException("Invalid research client frame counters.");
+                    Volatile.Write(ref clientConsumedFrames, count);
+                    Volatile.Write(ref clientExpectedFrames, expected);
+                    Volatile.Write(ref clientPlaybackComplete, message.RootElement.GetProperty("client_playback_complete").GetBoolean());
+                }
                 long qpc = message.RootElement.GetProperty("qpc").GetInt64();
                 double clockTime = message.RootElement.GetProperty("gameplay_clock_time_ms").GetDouble();
                 if (qpc <= 0 || !double.IsFinite(clockTime))
@@ -1398,6 +1657,7 @@ internal sealed class TraceHeader
     [JsonPropertyName("execution_fallback")] public bool ExecutionFallback { get; init; }
     [JsonPropertyName("execution_learned_segment_count")] public int ExecutionLearnedSegmentCount { get; init; }
     [JsonPropertyName("execution_changed_sample_count")] public int ExecutionChangedSampleCount { get; init; }
+    [JsonPropertyName("execution_fallback_segment_count")] public int ExecutionFallbackSegmentCount { get; init; }
     [JsonPropertyName("planner_version")] public string PlannerVersion { get; init; } = "";
     [JsonPropertyName("git_commit")] public string GitCommit { get; init; } = "";
     [JsonPropertyName("build_identity")] public string BuildIdentity { get; init; } = "";
@@ -1503,20 +1763,32 @@ internal readonly record struct WindowGuard(Native.RECT Rect, Native.RECT Client
 {
     public static WindowGuard Capture(nint window, int processId)
     {
-        if (!Native.GetWindowRect(window, out var rect)) throw new InvalidOperationException("Cannot read research client window bounds.");
-        Native.RECT clientRect = Native.GetClientScreenRect(window);
-        Native.RECT virtualScreen = Native.GetVirtualScreenRect();
-        return new WindowGuard(rect, clientRect, virtualScreen, Native.GetDpiForWindow(window), processId);
+        if (OperatingSystem.IsWindows())
+        {
+            if (!Native.GetWindowRect(window, out var rect)) throw new InvalidOperationException("Cannot read research client window bounds.");
+            Native.RECT clientRect = Native.GetClientScreenRect(window);
+            Native.RECT virtualScreen = Native.GetVirtualScreenRect();
+            return new WindowGuard(rect, clientRect, virtualScreen, Native.GetDpiForWindow(window), processId);
+        }
+
+        throw new PlatformNotSupportedException("Global window guards apply only to Windows.");
     }
 
     public void Validate(nint window)
     {
-        Native.GetWindowThreadProcessId(window, out uint pid);
-        if (pid != ProcessId) throw new InvalidOperationException("Research window ownership changed; run aborted.");
-        if (!Native.GetWindowRect(window, out var rect) || rect != Rect) throw new InvalidOperationException("Research window moved or resized; run aborted.");
-        if (Native.GetClientScreenRect(window) != ClientRect) throw new InvalidOperationException("Research client size or screen position changed; run aborted.");
-        if (Native.GetVirtualScreenRect() != VirtualScreen) throw new InvalidOperationException("Virtual screen size or layout changed; run aborted.");
-        if (Native.GetDpiForWindow(window) != Dpi) throw new InvalidOperationException("Research window DPI changed; run aborted.");
+        if (OperatingSystem.IsWindows())
+        {
+            Native.GetWindowThreadProcessId(window, out uint pid);
+            if (pid != ProcessId) throw new InvalidOperationException("Research window ownership changed; run aborted.");
+            if (!Native.GetWindowRect(window, out var rect) || rect != Rect) throw new InvalidOperationException("Research window moved or resized; run aborted.");
+            if (Native.GetClientScreenRect(window) != ClientRect) throw new InvalidOperationException("Research client size or screen position changed; run aborted.");
+            if (Native.GetVirtualScreenRect() != VirtualScreen) throw new InvalidOperationException("Virtual screen size or layout changed; run aborted.");
+            if (Native.GetDpiForWindow(window) != Dpi) throw new InvalidOperationException("Research window DPI changed; run aborted.");
+        }
+        else
+        {
+            throw new PlatformNotSupportedException("Global window guards apply only to Windows.");
+        }
     }
 
     public void ValidatePlayfield(StartMessage start)
@@ -1555,9 +1827,16 @@ internal static class Input
 {
     private static readonly HashSet<ushort> heldKeys = new();
     private static readonly Native.INPUT[] frameEvents = new Native.INPUT[3];
+    public static string BackendId => OperatingSystem.IsWindows() ? "windows-sendinput" : "timing-only";
+    public static string BackendName => OperatingSystem.IsWindows() ? "SendInput" : "timing-only";
 
     public static void SendFrame(double x, double y, bool targetK1, bool targetK2, ref bool k1, ref bool k2, ushort leftKey, ushort rightKey)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("Linux input must remain confined to the research client.");
+        }
+
         // SendInput inserts this array serially and without interleaving. Keeping
         // the mouse move first preserves cursor-before-key ordering while using
         // one kernel transition instead of two on every hit frame. Absolute
@@ -1566,10 +1845,12 @@ internal static class Input
         frameEvents[eventCount++] = Native.MouseMove(x, y);
         if (targetK1 != k1)
         {
+            if (targetK1) heldKeys.Add(leftKey);
             frameEvents[eventCount++] = Native.Key(leftKey, !targetK1);
         }
         if (targetK2 != k2)
         {
+            if (targetK2) heldKeys.Add(rightKey);
             frameEvents[eventCount++] = Native.Key(rightKey, !targetK2);
         }
 
@@ -1589,14 +1870,18 @@ internal static class Input
     public static void ReleaseKey(ushort virtualKey)
     {
         if (!heldKeys.Remove(virtualKey)) return;
-        send(new[] { Native.Key(virtualKey, true) }, 1);
+        if (OperatingSystem.IsWindows()) send(new[] { Native.Key(virtualKey, true) }, 1);
+        else throw new PlatformNotSupportedException("No global Linux key backend exists.");
     }
 
     public static void ReleaseAllKeys()
     {
         foreach (ushort key in heldKeys.ToArray())
         {
-            try { send(new[] { Native.Key(key, true) }, 1); }
+            try
+            {
+                if (OperatingSystem.IsWindows()) send(new[] { Native.Key(key, true) }, 1);
+            }
             catch { }
             heldKeys.Remove(key);
         }
@@ -1608,6 +1893,7 @@ internal static class Input
         else heldKeys.Remove(key);
     }
 
+    [SupportedOSPlatform("windows")]
     private static void send(Native.INPUT[] values, int count)
     {
         uint sent = Native.SendInput((uint)count, values, Marshal.SizeOf<Native.INPUT>());
@@ -1630,18 +1916,30 @@ internal static class Native
     private const uint KEYEVENTF_SCANCODE = 0x0008;
     private const uint MAPVK_VK_TO_VSC = 0;
 
+    [SupportedOSPlatform("windows")]
     [DllImport("user32.dll", SetLastError = true)] internal static extern uint SendInput(uint count, INPUT[] inputs, int size);
+    [SupportedOSPlatform("windows")]
     [DllImport("user32.dll")] internal static extern nint GetForegroundWindow();
+    [SupportedOSPlatform("windows")]
     [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(nint window, out uint processId);
+    [SupportedOSPlatform("windows")]
     [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool GetWindowRect(nint window, out RECT rect);
+    [SupportedOSPlatform("windows")]
     [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetClientRect(nint window, out RECT rect);
+    [SupportedOSPlatform("windows")]
     [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool ClientToScreen(nint window, ref POINT point);
+    [SupportedOSPlatform("windows")]
     [DllImport("user32.dll")] internal static extern uint GetDpiForWindow(nint window);
+    [SupportedOSPlatform("windows")]
     [DllImport("winmm.dll", SetLastError = true)] internal static extern uint timeBeginPeriod(uint uPeriod);
+    [SupportedOSPlatform("windows")]
     [DllImport("winmm.dll", SetLastError = true)] internal static extern uint timeEndPeriod(uint uPeriod);
+    [SupportedOSPlatform("windows")]
     [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
+    [SupportedOSPlatform("windows")]
     [DllImport("user32.dll")] private static extern uint MapVirtualKey(uint code, uint mapType);
 
+    [SupportedOSPlatform("windows")]
     internal static RECT GetClientScreenRect(nint window)
     {
         if (!GetClientRect(window, out RECT client)) throw new InvalidOperationException("Cannot read research client bounds.");
@@ -1650,12 +1948,14 @@ internal static class Native
         return new RECT(origin.X, origin.Y, origin.X + client.Width, origin.Y + client.Height);
     }
 
+    [SupportedOSPlatform("windows")]
     internal static RECT GetVirtualScreenRect()
     {
         int x = GetSystemMetrics(SM_XVIRTUALSCREEN), y = GetSystemMetrics(SM_YVIRTUALSCREEN);
         return new RECT(x, y, x + GetSystemMetrics(SM_CXVIRTUALSCREEN), y + GetSystemMetrics(SM_CYVIRTUALSCREEN));
     }
 
+    [SupportedOSPlatform("windows")]
     internal static INPUT MouseMove(double screenX, double screenY)
     {
         int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
@@ -1672,6 +1972,7 @@ internal static class Native
         };
     }
 
+    [SupportedOSPlatform("windows")]
     internal static INPUT Key(ushort virtualKey, bool up) => new()
     {
         type = INPUT_KEYBOARD,

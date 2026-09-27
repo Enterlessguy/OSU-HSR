@@ -3,8 +3,8 @@
 HSR (Human Simulator Research) is an offline research fork of osu!lazer for
 generating and replaying deterministic, visibly synthetic osu!standard input
 traces. This checkpoint contains the second-generation mathematical planner,
-guarded Windows input runner, replay research pipeline, and cross-map
-validation tooling.
+guarded Windows runner and private Linux client playback, replay
+research pipeline, and cross-map validation tooling.
 
 > [!IMPORTANT]
 > HSR is not an osu! cheat and must not be used with the production client or
@@ -18,6 +18,9 @@ endorsed by, or supported by ppy Pty Ltd. The upstream project is
 `2026.726.0-lazer`.
 
 ## Documentation
+
+**Arch Linux testing download:** [v0.1.2 Arch preview](https://github.com/Enterlessguy/OSU-HSR/releases/tag/v0.1.2-arch-preview).
+Use the [native package/source installation and testing guide](packaging/arch/TESTING.md).
 
 Read the [complete technical guide](docs/TECHNICAL_GUIDE.md) for setup, movement
 math, model composition, training, schemas, runtime protocol, benchmark, security,
@@ -38,8 +41,9 @@ troubleshooting and both distribution directions.
 - Hash-bound map/mod/clock-rate validation and deterministic trace caching.
 - 105-map library audit passing across 49,685 objects and more than 9 million
   generated frames.
-- The release Python suite passes 69 tests; build/runtime audits are recorded
-  in the release readiness document.
+- Current local Python run: 70 passed; two POSIX-only path tests were skipped
+  on Windows. Build/runtime audits are recorded in the release readiness
+  document.
 
 The mathematical system provides the baseline and safety envelope for the
 pinned v4 learned residual model. The integrated hybrid delivered learned
@@ -57,7 +61,10 @@ See [release notes](research/RELEASE_NOTES.md),
 ## Distribution directions
 
 - **Bundled build:** implemented osu!lazer research fork with HSR preinstalled,
-  login/submission disabled and the Intelligence Database watermark.
+  login/submission disabled and the Intelligence Database watermark. Windows
+  retains OS dispatch. The Arch package passed build/install/removal, native
+  X11/Wayland startup and installed model/compiler checks. Physical Linux
+  full-map gameplay remains a friend-testing gate for this preview.
 - **Official-client extension:** a custom ruleset is a feasibility direction;
   an arbitrary Mod DLL is not supported by the official loader. No extension
   DLL is shipped. See [both directions](research/DISTRIBUTION_OPTIONS.md).
@@ -77,7 +84,7 @@ Python mathematical planner ----> synthetic trace + hash-bound manifest
 HumanSim.Runner <---- authenticated named-pipe handshake ----> HSR client mod
     |
     v
-ordinary Windows SendInput, guarded by process/window/focus/DPI/map checks
+Windows SendInput or Linux private client input, guarded by process/focus/map checks
 ```
 
 ### Components
@@ -89,8 +96,8 @@ ordinary Windows SendInput, guarded by process/window/focus/DPI/map checks
 - `research/human-sim` contains planning, trace validation, corpus extraction,
   model fitting, evaluation, and library-audit commands.
 - `research/HumanSim.Runner` validates and dispatches traces through ordinary
-  Windows input while monitoring focus, clock drift, transforms, and process
-  identity.
+  Windows input or an authenticated private Linux timeline while monitoring focus,
+  clock drift, transforms, and process identity.
 - `research/HumanSim.ReplayExtractor` decodes local `.osr` research captures
   and hashes player identity with a private salt.
 
@@ -99,13 +106,21 @@ See `HANDOFF.md` for detailed implementation history and
 
 ## Requirements
 
-- Windows 10 or newer.
+- Windows 10 or newer, or Arch Linux x86_64 with an X11 or Wayland desktop.
 - PowerShell 7 recommended.
 - Python 3.12 or newer.
-- A patched .NET 8 SDK (8.0.425 / runtime 8.0.31 verified locally), either
-  under `.dotnet` or available on PATH.
+- .NET 8 SDK (8.0.425 / runtime 8.0.31 verified locally); Arch package prep
+  targets Arch's `dotnet-sdk-8.0` and `dotnet-runtime-8.0`. .NET 8 support ends
+  on 2026-11-10, so a supported runtime upgrade is required before then.
 - A local osu! beatmap library for automatic map selection and live research
   runs.
+
+Linux input is confined to the focused research client. It consumes the
+validated synthetic trace against the gameplay clock, with exact key edges
+and explicit consumed-frame/learned/fallback counters. It does not use XTest,
+xdotool, root or input-device permissions. Windows OS latency measurements
+do not apply to this different delivery route. The AUR package has not been
+published. See [Linux and Arch instructions](packaging/arch/README.md).
 
 Do not commit local beatmaps, replay exports, credentials, raw player data,
 generated traces, or trained binary models.
@@ -136,12 +151,16 @@ $dotnet = ".\.dotnet\dotnet.exe"
 
 ## Run
 
-The interactive launcher builds all components, updates the Python environment,
+On Windows, the interactive launcher builds all components, updates the Python environment,
 prompts for skill and effort, then starts the guarded automatic-planning runner:
 
 ```powershell
 .\research\run-dev-build.ps1
 ```
+
+On Arch Linux, see [packaging instructions](packaging/arch/README.md) for the
+local `makepkg` and review workflow. Do not treat that package as a verified
+release until its Arch CI and representative desktop checks pass.
 
 Alternatively, after building:
 

@@ -68,5 +68,61 @@ in ignored local verification storage. This is compiler planning evidence,
 not a final interactive gameplay capture.
 Package a clean Git commit with `research/package-source.ps1`; inspect ZIP
 contents and checksums. Record exact evidence in the private handoff.
-Publication to public `Enterlessguy/OSU-HSR` is authorized. Preserve these
-checks for future releases and publish only the reviewed source/model package.
+That source-release authorization applied to the 2026-09-26 source/model
+release. It does not authorize publishing the subsequent Linux compatibility
+changes or an AUR package.
+
+## Linux / Arch readiness audit — 2026-09-27
+
+The initial XTest/xdotool prototype was superseded by authenticated private
+client timeline playback for X11 and Wayland. Windows SendInput is retained.
+The client checks the transferred trace digest, token, map and rate; no
+production-client attachment or global Linux input backend exists.
+
+Local Windows checks: client and runner Release builds have zero warnings/errors;
+research boundary disables login/submission; 153 actual input-handler cases
+and 14 malformed transport/hash cases pass; runner protocol/scheduling contracts
+pass. Python: 71 passed, 3 POSIX-only cases skipped. Shell syntax and the frozen
+model digest pass. The public source/history scan found no recognized findings.
+
+The Arch recipe publishes only linux-x64 runtime output and planner/model files,
+uses system Python dependencies, supplies check(), desktop launchers and a
+NuGet licence inventory. AUR metadata, makepkg, installation, diagnostics and
+native X11/Wayland startup passed in [CI run 36279524900](https://github.com/Enterlessguy/OSU-HSR/actions/runs/36279524900)
+at source commit `ba77630`. Windows and Ubuntu checks also passed. Namcap
+reported no errors; retained native-library hardening and dependency warnings
+are described in `packaging/arch/NATIVE_DEPENDENCIES.md`.
+The public source-pin build in [run 36280322335](https://github.com/Enterlessguy/OSU-HSR/actions/runs/36280322335)
+also passed installation, native startup and removal after the final native
+notices, source archives and runtime symlink layout were added.
+[Run 36280532846](https://github.com/Enterlessguy/OSU-HSR/actions/runs/36280532846)
+verified the installed compiler/exporter/planner/model chain: 41,317 synthetic
+frames, 26 learned segments, 39,078 changed samples and zero fallbacks.
+The final source pin `632f100ae008b29eb00d8498ff3042e1cfe58a25` passed all three
+jobs in [run 36280792929](https://github.com/Enterlessguy/OSU-HSR/actions/runs/36280792929),
+including the installed learned compiler, native X11/Wayland startup and
+uninstall gates. Representative real-map gameplay on a physical Linux desktop
+remains unverified. No AUR upload has occurred.
+
+The small VPS stopped responding during initial Arch build validation; further
+builds must use CI, not that host. A stop of the named validation container
+was attempted but could not be confirmed over SSH. No VPS services or data
+were deliberately changed outside the isolated validation directory/container.
+
+The user approved publishing the Linux review branch and running CI on
+2026-09-27. The branch is `codex/hsr-linux-readiness`; main is unchanged.
+AUR credentials and upload approval are
+separate from source/CI review. Runtime-library commercial licence conditions
+must be retained; the source MIT licence does not relicense native BASS.
+
+## GitHub Arch testing publication — 2026-09-27
+
+The user authorized a downloadable Linux testing release for a friend to perform
+the physical desktop gameplay check. AUR publication is deferred: the user
+reports registration is temporarily closed and selected GitHub distribution.
+The testing release contains the verified 0.1.2-1 native Arch package and a
+pinned source build recipe. Both install the implemented separate research
+client; the official-client extension remains unimplemented. The native package
+and model hashes, prior CI evidence and dependency limitations above remain
+unchanged. This permission authorizes the testing release; it does not make
+the pending physical gameplay checks pass.

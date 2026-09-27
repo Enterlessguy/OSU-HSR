@@ -33,6 +33,11 @@ namespace osu.Desktop
         [STAThread]
         public static void Main(string[] args)
         {
+            if (osu.Game.Research.ResearchBuild.Enabled && args.Length == 1 && args[0] == "--verify-research-trace-input")
+            {
+                Console.WriteLine(osu.Game.Rulesets.Osu.Research.ResearchTraceInputHandler.VerifyContracts());
+                return;
+            }
             if (args.Length == 1 && args[0] == "--print-research-boundary")
             {
                 Console.WriteLine($"research={osu.Game.Research.ResearchBuild.Enabled};login={osu.Game.Research.ResearchBuild.AllowsLogin};submission={osu.Game.Research.ResearchBuild.AllowsScoreSubmission(Array.Empty<osu.Game.Rulesets.Mods.Mod>())}");
@@ -85,8 +90,12 @@ namespace osu.Desktop
             string cwd = Environment.CurrentDirectory;
 
             string gameName = base_game_name;
+            bool researchHostSmoke = args.Length == 1 && args[0] == "--verify-research-host";
+            if (researchHostSmoke && !osu.Game.Research.ResearchBuild.Enabled)
+                throw new InvalidOperationException("Native research smoke requires the isolated research build.");
             if (osu.Game.Research.ResearchBuild.Enabled)
                 gameName = "osu-development";
+            if (researchHostSmoke) gameName = $"hsr-host-smoke-{Guid.NewGuid():N}";
             bool tournamentClient = false;
 
             foreach (string arg in args)
@@ -116,7 +125,7 @@ namespace osu.Desktop
 
             var hostOptions = new HostOptions
             {
-                IPCPipeName = !tournamentClient
+                IPCPipeName = !tournamentClient && !researchHostSmoke
                     ? (osu.Game.Research.ResearchBuild.Enabled ? "osu-human-sim-research" : OsuGame.IPC_PIPE_NAME)
                     : null,
                 FriendlyGameName = OsuGameBase.GAME_NAME,
@@ -151,7 +160,13 @@ namespace osu.Desktop
                     }
                 }
 
-                if (tournamentClient)
+                if (researchHostSmoke)
+                {
+                    var smoke = new ResearchSmokeGame();
+                    host.Run(smoke);
+                    if (!smoke.Succeeded) throw new InvalidOperationException("Native research host exited before verification completed.");
+                }
+                else if (tournamentClient)
                     host.Run(new TournamentGame());
                 else
                 {

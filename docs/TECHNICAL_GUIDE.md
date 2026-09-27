@@ -2,7 +2,8 @@
 
 **Human Simulator Research · Intelligence Database**
 
-HSR is a Windows research fork of osu!lazer. It generates visibly synthetic
+HSR is a research fork of osu!lazer for Windows and Linux. Linux uses private
+client input for X11 and Wayland. It generates visibly synthetic
 movement and key traces from decoded beatmaps, compares mathematical and learned
 movement, and executes traces through a guarded runner against its own client.
 It is independent of ppy Pty Ltd. The upstream base is `2026.726.0-lazer`.
@@ -26,7 +27,7 @@ It is independent of ppy Pty Ltd. The upstream base is `2026.726.0-lazer`.
 
 | Direction | Status | What users receive |
 |---|---|---|
-| Separate osu!lazer research build | Implemented | Fork source with HSR preinstalled, runner, tools and pinned JSON model |
+| Separate osu!lazer research build | Implemented | Fork source with HSR preinstalled, runner, tools and pinned JSON model; Linux uses private client input for X11 and Wayland |
 | Extension for official osu!lazer | Feasibility design | Architecture and acceptance requirements; no extension DLL |
 
 ### Separate research build
@@ -75,12 +76,19 @@ and [official custom-mode documentation](https://osu.ppy.sh/wiki/en/Game_mode#cu
 
 ### Requirements
 
-- Windows 10 or newer; PowerShell 7 recommended.
+- Windows 10 or newer, or Arch Linux x86_64 with X11 or Wayland.
+  PowerShell 7 is recommended on Windows.
 - Python 3.12; the pinned environment was verified on Windows Python 3.12.
 - A patched .NET 8 SDK on PATH or installed under repository `.dotnet`.
   SDK 8.0.425 / host and runtime 8.0.31 were verified locally.
 - Git and a local library of appropriately licensed beatmaps.
 - Network access for initial Python/NuGet dependency installation.
+
+The Arch package workflow is documented in
+[`packaging/arch/README.md`](../packaging/arch/README.md). The PKGBUILD is
+prepared but has not yet been built under Arch or published to the AUR. .NET 8
+support ends on 2026-11-10; migrate the package and CI to a supported runtime
+before then.
 
 Clone the repository and prepare the Python environment:
 
@@ -150,7 +158,7 @@ flowchart TD
     G --> T[Synthetic trace and manifest]
     T --> R[C# runner: validate and schedule]
     H[Research client handshake and clock samples] --> R
-    R --> I[Guarded Windows input]
+    R --> I[Windows SendInput or private Linux client timeline]
     I --> H
 ```
 
@@ -324,9 +332,16 @@ After trace validation and acknowledgement, start/heartbeat messages provide
 gameplay-clock/QPC pairs. Heartbeats are normally emitted at 50 ms intervals.
 The clock model fits gameplay time against the high-resolution host clock,
 tracks correction, and anchors extrapolation to recent samples. The runner
-maps playfield positions to the guarded window transform and schedules
-ordinary Windows `SendInput` mouse/key events. Cursor dispatch is capped by
-trace rate and requested cursor rate (up to 1,000 Hz).
+maps playfield positions to the guarded window transform. Windows schedules
+ordinary `SendInput`. Linux transfers a SHA-256 checked, bounded synthetic
+timeline to the client through the authenticated pipe. The client validates
+token/map/rate and uses a private frame-accurate input handler with its gameplay
+clock. Every scheduled cursor position and key edge is retained even when the
+render clock arrives late; counters track consumed frames and learned exposure.
+The handler uses normal client focus and playfield geometry on X11 and Wayland,
+with no global input permission. It does not create a replay score or change
+the frozen model. OS dispatch latency calibration is a separate measurement;
+Windows runtime timing values do not transfer to the client timeline backend.
 
 The guard monitors process/window identity, foreground focus, playfield/DPI
 changes and connection health. Focus loss, invalid transform, process exit,
@@ -470,10 +485,15 @@ Expected mapping diagnostic: 33 configured maps, maximum depth 32.
 The release test suite passed 69 tests, including stack/reversal/closed-route
 contacts, C2 outer joins, model rejection, zero exposure, invalid timestamps,
 download traversal and polynomial-envelope scaling equivalence.
+The current Windows run passes 71 tests; three POSIX-only checks are skipped
+on Windows. Linux delivery diagnostics include 153 scheduled-frame checks and
+14 transport rejection cases.
 
 | Symptom | Check/action |
 |---|---|
 | Missing Python/SDK | Run setup; install patched .NET 8; check PATH or local `.dotnet` |
+| Linux launcher has no display | Start an X11 or Wayland session; use `--diagnostics` for checks without a display |
+| Linux package lacks a command | Review Arch runtime dependencies and installed files with `namcap` and `pacman -Ql` |
 | Planner version mismatch | Bind the environment to this checkout; rebuild runner; do not share old editable source |
 | Model hash mismatch | Restore the pinned LF JSON; verify raw/canonical hashes; do not bypass checks |
 | No delivered learned movement | Inspect unsupported-window/fallback diagnostics; use explicit math-only control if intended |

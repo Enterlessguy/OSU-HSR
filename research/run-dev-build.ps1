@@ -255,7 +255,7 @@ try {
     $humanSim = Join-Path $root "research\human-sim\.venv\Scripts\human-sim.exe"
     $client = Join-Path $root "osu.Desktop\bin\Debug\net8.0\osu!.exe"
     $runnerProject = Join-Path $root "research\HumanSim.Runner\HumanSim.Runner.csproj"
-    $runnerDll = Join-Path $root "research\HumanSim.Runner\bin\Debug\net8.0-windows\HumanSim.Runner.dll"
+    $runnerDll = Join-Path $root "research\HumanSim.Runner\bin\Debug\net8.0\HumanSim.Runner.dll"
     $coherentModel = Join-Path $root "research\human-sim\models\experimental\seed101-math-residual-g100-v4.json"
     foreach ($required in @($dotnet, $python, $humanSim)) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {

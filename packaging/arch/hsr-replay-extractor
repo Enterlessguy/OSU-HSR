@@ -1,0 +1,3 @@
+#!/bin/sh
+set -eu
+exec dotnet /usr/lib/intelligence-database-hsr/research/HumanSim.ReplayExtractor/bin/Release/net8.0/HumanSim.ReplayExtractor.dll "$@"

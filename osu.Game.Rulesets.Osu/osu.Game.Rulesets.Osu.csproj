@@ -15,4 +15,7 @@
   <ItemGroup Label="Project References">
     <ProjectReference Include="..\osu.Game\osu.Game.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../research/Shared/ResearchTraceData.cs" Link="Research/ResearchTraceData.cs" />
+  </ItemGroup>
 </Project>

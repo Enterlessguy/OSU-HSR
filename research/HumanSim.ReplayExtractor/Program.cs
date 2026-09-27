@@ -13,6 +13,12 @@ public static class Program
 {
     public static int Main(string[] args)
     {
+        if (args.Length == 1 && args[0] is "--help" or "-h")
+        {
+            Console.WriteLine("Usage: hsr-replay-extractor --replay <file.osr> --map <file.osu> --output <frames.ndjson>");
+            Console.WriteLine("Set HUMAN_SIM_PLAYER_SALT before extracting player data.");
+            return 0;
+        }
         try
         {
             Options options = Options.Parse(args);
