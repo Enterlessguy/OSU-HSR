@@ -1,23 +1,30 @@
-# Intelligence Database HSR — local V2 research preview
+# Intelligence Database HSR: local V2 research preview
 
-HSR (Human Simulator Research) is an offline research fork of osu!lazer for
-generating and replaying deterministic, visibly synthetic osu!standard input
-traces. This checkpoint contains the second-generation mathematical planner,
-guarded Windows runner and private Linux client playback, replay
-research pipeline, and cross-map validation tooling.
+HSR (Human Simulator Research) is an offline research fork of osu!lazer that
+plays osu!standard maps the way a real player at a chosen skill level would.
+You pick a skill level from 0 to 100, and it generates a deterministic input
+trace with realistic aim drift, timing error, mistaps and fatigue, then plays
+it back in a locked-down client so the game itself judges the result. It's
+built for benchmarking map difficulty, finding the parts of a map that trip up
+mid-level players, and running repeatable comparisons across maps, mods and
+skill levels.
+
+This checkpoint has the second-generation mathematical planner, the guarded
+Windows runner, private Linux client playback, the replay research pipeline
+and the cross-map validation tools.
 
 > [!IMPORTANT]
-> HSR is not an osu! cheat and must not be used with the production client or
-> online score submission. The research build disables login and score
-> submission, generated traces are permanently marked `synthetic: true`, and
-> the runner only accepts its own authenticated local build.
+> HSR isn't an osu! cheat, and it shouldn't be used with the regular client or
+> online score submission. The research build has login and score submission
+> turned off, every generated trace is permanently marked `synthetic: true`, and
+> the runner only works with its own authenticated local build.
 
 This repository is an independent research fork and is not affiliated with,
 endorsed by, or supported by ppy Pty Ltd. The upstream project is
 [ppy/osu](https://github.com/ppy/osu), pinned here to tag
 `2026.726.0-lazer`.
 
-## Documentation
+## Getting started
 
 **Arch Linux testing download:** [v0.1.2 Arch preview](https://github.com/Enterlessguy/OSU-HSR/releases/tag/v0.1.2-arch-preview).
 Use the [native package/source installation and testing guide](packaging/arch/TESTING.md).
@@ -207,11 +214,11 @@ trace markers. Changes that weaken those controls are outside project scope.
 
 ## Documentation
 
-- `HANDOFF.md` - implementation history, key files, commands, and open work.
-- `research/human-sim/README.md` - planner and corpus-tool documentation.
-- `research/SECURITY_BOUNDARY.md` - enforced research isolation model.
-- `research/human-sim/output/phase1-aim-benchmark.md` - phase-one evidence.
-- `research/human-sim/output/phase2-timing-analysis.md` - phase-two analysis.
+- `HANDOFF.md`: implementation history, key files, commands, and open work.
+- `research/human-sim/README.md`: planner and corpus-tool documentation.
+- `research/SECURITY_BOUNDARY.md`: enforced research isolation model.
+- `research/human-sim/output/phase1-aim-benchmark.md`: phase-one evidence.
+- `research/human-sim/output/phase2-timing-analysis.md`: phase-two analysis.
 
 ## Licence and upstream attribution
 
